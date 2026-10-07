@@ -12,6 +12,7 @@ from server.app.core.config import settings
 from server.app.core.hmac_auth import verify_hmac_signature
 from server.app.database.session import get_db
 from server.app.models.evidence import Evidence
+from server.app.models.custody import ChainOfCustody
 from server.app.api.endpoints.schemas import EvidenceRead
 
 router = APIRouter(prefix="/evidence", tags=["Evidence"])
@@ -194,6 +195,26 @@ async def _ingest_evidence(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to record evidence in database: {str(exc)}",
         )
+
+    # Create the initial chain-of-custody record for the ACQUIRED event
+    custody_record = ChainOfCustody(
+        evidence_id=evidence_record.evidence_id,
+        action="ACQUIRED",
+        actor=evidence_record.collector_id or "unknown",
+        location=str(destination_path),
+        notes=(
+            f"Evidence artifact '{original_filename}' acquired via "
+            f"{'authenticated collector' if signed_payload_hash else 'browser UI'} upload. "
+            f"SHA-256: {sha256_digest}. Size: {file_size_bytes} bytes."
+        ),
+        timestamp=now_utc,
+    )
+    try:
+        db.add(custody_record)
+        db.commit()
+    except Exception:
+        # Non-fatal: evidence is already persisted; log but don't fail the upload
+        db.rollback()
 
     return evidence_record
 

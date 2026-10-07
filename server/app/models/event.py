@@ -11,9 +11,10 @@ class InvestigationEvent(Base):
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     event_id = Column(String(64), unique=True, index=True, nullable=False)
-    event_type = Column(String(64), nullable=False)  # SYSTEM_START, COLLECTOR_HEARTBEAT, INGEST_EVENT
+    evidence_id = Column(String(64), index=True, nullable=True)
+    event_type = Column(String(64), nullable=False)  # SYSTEM_START, COLLECTOR_HEARTBEAT, INGEST_EVENT, NETWORK_FLOW, SECURITY_FINDING
     source = Column(String(128), nullable=False)     # SERVER, COLLECTOR, EXAMINER
-    severity = Column(String(32), default="INFO", nullable=False)  # INFO, WARNING, ERROR
+    severity = Column(String(32), default="INFO", nullable=False)  # INFO, WARNING, ERROR, HIGH, CRITICAL
     message = Column(Text, nullable=False)
     metadata_json = Column(Text, nullable=True)
     timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)

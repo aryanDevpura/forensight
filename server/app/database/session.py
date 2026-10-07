@@ -25,6 +25,19 @@ def init_db() -> None:
     # Create tables
     Base.metadata.create_all(bind=engine)
 
+    # Ensure schema migrations for SQLite if table was created previously without evidence_id
+    from sqlalchemy import inspect
+    try:
+        insp = inspect(engine)
+        if "investigation_events" in insp.get_table_names():
+            cols = [c["name"] for c in insp.get_columns("investigation_events")]
+            if "evidence_id" not in cols:
+                with engine.begin() as conn:
+                    conn.execute(text("ALTER TABLE investigation_events ADD COLUMN evidence_id VARCHAR(64)"))
+                    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_investigation_events_evidence_id ON investigation_events (evidence_id)"))
+    except Exception:
+        pass
+
 
 def check_db_connection() -> bool:
     """Quick sanity check to verify database connectivity."""

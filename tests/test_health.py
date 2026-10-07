@@ -34,7 +34,9 @@ def test_system_stats_endpoint():
     data = response.json()
     assert isinstance(data["evidence_count"], int)
     assert data["evidence_count"] >= 0
-    assert data["findings_count"] == 0
-    assert data["events_count"] == 0
-    assert data["custody_records_count"] == 0
+    assert isinstance(data["findings_count"], int)
+    assert isinstance(data["events_count"], int)
+    assert data["events_count"] >= 0
+    assert isinstance(data["custody_records_count"], int)
+    assert data["custody_records_count"] >= 0
     assert data["benchmark_runs_count"] == 0

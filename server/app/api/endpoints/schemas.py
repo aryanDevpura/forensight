@@ -94,9 +94,26 @@ class FindingRead(FindingBase):
     model_config = ConfigDict(from_attributes=True)
 
 
+class AnalysisTriggerResponse(BaseModel):
+    evidence_id: str
+    evidence_status: str
+    is_valid_pcap: bool
+    packet_count: int
+    total_bytes: int
+    protocols: dict
+    source_ips: dict
+    destination_ips: dict
+    source_ports: dict
+    destination_ports: dict
+    conversations: list
+    findings_count: int
+    findings: List[FindingBase]
+
+
 # Investigation Event Schema Placeholders
 class InvestigationEventBase(BaseModel):
     event_id: str
+    evidence_id: Optional[str] = None
     event_type: str
     source: str
     severity: str = "INFO"
