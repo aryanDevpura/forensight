@@ -117,5 +117,35 @@ export async function fetchTimeline(evidenceId = null) {
   return await response.json();
 }
 
+export async function fetchBenchmarks(filters = {}) {
+  const params = new URLSearchParams();
+  if (filters.benchmark_name) params.append('benchmark_name', filters.benchmark_name);
+  if (filters.evidence_id) params.append('evidence_id', filters.evidence_id);
 
+  const query = params.toString() ? `?${params.toString()}` : '';
+  const response = await fetch(`${BASE_URL}/api/benchmarks${query}`, {
+    headers: {
+      'Accept': 'application/json',
+    },
+  });
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => null);
+    const message = errorData?.detail || `Failed to fetch benchmarks: HTTP ${response.status}`;
+    throw new Error(message);
+  }
+  return await response.json();
+}
 
+export async function fetchBenchmarksSummary() {
+  const response = await fetch(`${BASE_URL}/api/benchmarks/summary`, {
+    headers: {
+      'Accept': 'application/json',
+    },
+  });
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => null);
+    const message = errorData?.detail || `Failed to fetch benchmarks summary: HTTP ${response.status}`;
+    throw new Error(message);
+  }
+  return await response.json();
+}
