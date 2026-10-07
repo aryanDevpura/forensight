@@ -1,11 +1,13 @@
 import json
+import time
 import urllib.request
 import urllib.error
 from pathlib import Path
 from typing import Dict, Any, Tuple
 
 from collector.config import CollectorConfig
-from collector.auth import compute_payload_hash, sign_request
+from collector.auth import compute_payload_hash, sign_request, sign_request_with_metrics
+
 
 
 class EvidenceCollector:
@@ -91,12 +93,14 @@ class EvidenceCollector:
 
         # Read file bytes for hashing (kept in memory for signing; streamed on upload)
         file_bytes = artifact.read_bytes()
+        t_hash = time.perf_counter()
         payload_hash = compute_payload_hash(file_bytes)
+        payload_hashing_sec = time.perf_counter() - t_hash
 
         # Use a deterministic placeholder; the server generates the real ID on ingest.
         evidence_id_for_signing = evidence_id_override or f"PENDING-{artifact.name}"
 
-        auth_headers = sign_request(
+        auth_headers, signing_duration_sec = sign_request_with_metrics(
             secret=self.config.hmac_secret,
             evidence_id=evidence_id_for_signing,
             payload_hash=payload_hash,
@@ -143,6 +147,11 @@ class EvidenceCollector:
                 return (True, {
                     "http_status": status_code,
                     "evidence": body_json,
+                    "metrics": {
+                        "payload_hashing_ms": round(payload_hashing_sec * 1000.0, 4),
+                        "hmac_signing_ms": round(signing_duration_sec * 1000.0, 4),
+                        "file_size_bytes": len(file_bytes),
+                    },
                 })
         except urllib.error.HTTPError as err:
             try:

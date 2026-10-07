@@ -59,3 +59,22 @@ def sign_request(
         "X-ForenSight-Payload-Hash": payload_hash,
         "X-ForenSight-Signature": signature,
     }
+
+
+def sign_request_with_metrics(
+    secret: str,
+    evidence_id: str,
+    payload_hash: str,
+    timestamp: int | None = None,
+) -> tuple[dict[str, str], float]:
+    """
+    Sign collector upload request and measure execution time using high-resolution monotonic timer.
+
+    Returns:
+        tuple of (headers dict, elapsed_duration_seconds float)
+    """
+    t0 = time.perf_counter()
+    headers = sign_request(secret, evidence_id, payload_hash, timestamp)
+    elapsed_sec = time.perf_counter() - t0
+    return headers, elapsed_sec
+

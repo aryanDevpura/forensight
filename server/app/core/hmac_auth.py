@@ -129,6 +129,9 @@ def verify_hmac_signature(
             headers={"WWW-Authenticate": "HMAC-SHA256"},
         )
 
+    # Measure HMAC verification computation time using high-resolution monotonic timer
+    t0 = time.perf_counter()
+
     # Compute expected signature
     expected_sig = compute_hmac(
         secret=secret,
@@ -138,10 +141,16 @@ def verify_hmac_signature(
     )
 
     # Constant-time comparison to prevent timing attacks
-    if not hmac.compare_digest(
+    sig_valid = hmac.compare_digest(
         expected_sig.lower(),
         x_forensight_signature.lower(),
-    ):
+    )
+    verification_time_sec = time.perf_counter() - t0
+
+    # Attach metric to request state for downstream recording
+    request.state.hmac_verification_time_sec = verification_time_sec
+
+    if not sig_valid:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=(
@@ -154,4 +163,6 @@ def verify_hmac_signature(
         "timestamp": request_ts,
         "evidence_id": x_forensight_evidence_id,
         "payload_hash": x_forensight_payload_hash,
+        "verification_time_sec": verification_time_sec,
     }
+

@@ -131,6 +131,7 @@ class InvestigationEventRead(InvestigationEventBase):
 # Benchmark Result Schema Placeholders
 class BenchmarkResultBase(BaseModel):
     benchmark_name: str
+    evidence_id: Optional[str] = None
     sample_size_bytes: int
     duration_ms: float
     throughput_mbps: Optional[float] = None
@@ -142,3 +143,4 @@ class BenchmarkResultRead(BenchmarkResultBase):
     recorded_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+

@@ -12,6 +12,7 @@ Integrity guarantee:
 
 import json
 import uuid
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -21,7 +22,9 @@ from server.app.models.evidence import Evidence
 from server.app.models.finding import Finding
 from server.app.models.custody import ChainOfCustody
 from server.app.models.event import InvestigationEvent
+from server.app.core.benchmark_recorder import record_benchmark
 from server.app.services.pcap_parser import parse_pcap_file, PcapAnalysisResult
+
 
 
 
@@ -44,6 +47,8 @@ def analyze_pcap_evidence(
     evidence_path = Path(evidence.file_path)
     if not evidence_path.exists():
         raise FileNotFoundError(f"Evidence file not found on disk: {evidence.file_path}")
+
+    t_analysis_start = time.perf_counter()
 
     # Pure read-only parse
     parsed: PcapAnalysisResult = parse_pcap_file(evidence_path)
@@ -236,6 +241,18 @@ def analyze_pcap_evidence(
         db.add(custody_event)
 
     db.commit()
+
+    analysis_duration_sec = time.perf_counter() - t_analysis_start
+
+    # Record genuine benchmark measurement for PCAP forensic analysis
+    record_benchmark(
+        db=db,
+        benchmark_name="PCAP_ANALYSIS",
+        duration_sec=analysis_duration_sec,
+        sample_size_bytes=evidence.file_size_bytes,
+        evidence_id=evidence.evidence_id,
+        system_info=f"Packets: {parsed.packet_count}, Findings: {len(findings_to_create)}",
+    )
 
     return {
         "evidence_id": evidence.evidence_id,

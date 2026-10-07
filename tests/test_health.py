@@ -39,4 +39,5 @@ def test_system_stats_endpoint():
     assert data["events_count"] >= 0
     assert isinstance(data["custody_records_count"], int)
     assert data["custody_records_count"] >= 0
-    assert data["benchmark_runs_count"] == 0
+    assert isinstance(data["benchmark_runs_count"], int)
+    assert data["benchmark_runs_count"] >= 0

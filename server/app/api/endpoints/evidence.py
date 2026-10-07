@@ -1,6 +1,7 @@
 import os
 import uuid
 import hashlib
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
@@ -10,10 +11,12 @@ from sqlalchemy.orm import Session
 
 from server.app.core.config import settings
 from server.app.core.hmac_auth import verify_hmac_signature
+from server.app.core.benchmark_recorder import record_benchmark
 from server.app.database.session import get_db
 from server.app.models.evidence import Evidence
 from server.app.models.custody import ChainOfCustody
 from server.app.api.endpoints.schemas import EvidenceRead
+
 
 router = APIRouter(prefix="/evidence", tags=["Evidence"])
 
@@ -130,11 +133,15 @@ async def _ingest_evidence(
             detail="Illegal file storage path detected.",
         )
 
+    # Measure total ingestion time and streaming hashing time with monotonic timers
+    t_ingest_start = time.perf_counter()
+
     # Stream file to disk while computing SHA-256 (64 KB chunks)
     hasher = hashlib.sha256()
     file_size_bytes = 0
     chunk_size = 65536
 
+    t_hash_start = time.perf_counter()
     try:
         with open(destination_path, "wb") as dest_file:
             while chunk := await file.read(chunk_size):
@@ -148,6 +155,7 @@ async def _ingest_evidence(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to write evidence artifact: {str(exc)}",
         )
+    hashing_duration_sec = time.perf_counter() - t_hash_start
 
     sha256_digest = hasher.hexdigest()
 
@@ -215,6 +223,26 @@ async def _ingest_evidence(
     except Exception:
         # Non-fatal: evidence is already persisted; log but don't fail the upload
         db.rollback()
+
+    total_ingestion_sec = time.perf_counter() - t_ingest_start
+
+    # Persist genuine benchmark measurements
+    record_benchmark(
+        db=db,
+        benchmark_name="SHA256_HASHING",
+        duration_sec=hashing_duration_sec,
+        sample_size_bytes=file_size_bytes,
+        evidence_id=evidence_record.evidence_id,
+        system_info=f"ChunkSize: {chunk_size} bytes",
+    )
+    record_benchmark(
+        db=db,
+        benchmark_name="EVIDENCE_INGESTION",
+        duration_sec=total_ingestion_sec,
+        sample_size_bytes=file_size_bytes,
+        evidence_id=evidence_record.evidence_id,
+        system_info=f"Storage: {destination_path.name}",
+    )
 
     return evidence_record
 
@@ -289,7 +317,20 @@ async def upload_evidence_authenticated(
         db=db,
         signed_payload_hash=auth_claims["payload_hash"],
     )
+
+    # Record HMAC verification benchmark if measured in verify_hmac_signature
+    if "verification_time_sec" in auth_claims:
+        record_benchmark(
+            db=db,
+            benchmark_name="HMAC_VERIFICATION",
+            duration_sec=auth_claims["verification_time_sec"],
+            sample_size_bytes=record.file_size_bytes,
+            evidence_id=record.evidence_id,
+            system_info="HMAC-SHA256 pre-shared secret verification",
+        )
+
     return record
+
 
 
 # ---------------------------------------------------------------------------

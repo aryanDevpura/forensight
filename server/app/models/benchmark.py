@@ -11,6 +11,7 @@ class BenchmarkResult(Base):
     __tablename__ = "benchmark_results"
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    evidence_id = Column(String(64), index=True, nullable=True)
     benchmark_name = Column(String(128), nullable=False)
     sample_size_bytes = Column(Integer, nullable=False)
     duration_ms = Column(Float, nullable=False)

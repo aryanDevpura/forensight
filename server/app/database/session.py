@@ -25,16 +25,23 @@ def init_db() -> None:
     # Create tables
     Base.metadata.create_all(bind=engine)
 
-    # Ensure schema migrations for SQLite if table was created previously without evidence_id
+    # Ensure schema migrations for SQLite if tables were created previously without evidence_id
     from sqlalchemy import inspect
     try:
         insp = inspect(engine)
-        if "investigation_events" in insp.get_table_names():
+        table_names = insp.get_table_names()
+        if "investigation_events" in table_names:
             cols = [c["name"] for c in insp.get_columns("investigation_events")]
             if "evidence_id" not in cols:
                 with engine.begin() as conn:
                     conn.execute(text("ALTER TABLE investigation_events ADD COLUMN evidence_id VARCHAR(64)"))
                     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_investigation_events_evidence_id ON investigation_events (evidence_id)"))
+        if "benchmark_results" in table_names:
+            cols = [c["name"] for c in insp.get_columns("benchmark_results")]
+            if "evidence_id" not in cols:
+                with engine.begin() as conn:
+                    conn.execute(text("ALTER TABLE benchmark_results ADD COLUMN evidence_id VARCHAR(64)"))
+                    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_benchmark_results_evidence_id ON benchmark_results (evidence_id)"))
     except Exception:
         pass
 
