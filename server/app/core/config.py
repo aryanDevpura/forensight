@@ -39,6 +39,11 @@ class Settings(BaseSettings):
     # Allowed clock skew for replay protection (seconds)
     HMAC_REPLAY_WINDOW_SECONDS: int = 300
 
+    # AES-256-GCM Transfer Encryption
+    # Pre-shared 256-bit key for Collector → Server evidence encryption.
+    # Must be set in .env (hex or raw 32-byte string) — never hardcoded.
+    FORENSIGHT_ENCRYPTION_KEY: str = ""
+
     @property
     def cors_origins_list(self) -> List[str]:
         return [origin.strip() for origin in self.CORS_ORIGINS.split(",") if origin.strip()]

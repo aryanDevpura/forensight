@@ -30,6 +30,10 @@ class CollectorConfig:
     hmac_secret: str = field(
         default_factory=lambda: os.getenv("FORENSIGHT_HMAC_SECRET", "")
     )
+    # Pre-shared AES-256-GCM encryption key — loaded from environment only.
+    encryption_key: str = field(
+        default_factory=lambda: os.getenv("FORENSIGHT_ENCRYPTION_KEY", "")
+    )
 
     @property
     def server_base_url(self) -> str:
@@ -57,4 +61,5 @@ class CollectorConfig:
             "target_server_url": self.server_base_url,
             "poll_interval_seconds": self.poll_interval_seconds,
             "hmac_configured": bool(self.hmac_secret),
+            "encryption_configured": bool(self.encryption_key),
         }

@@ -64,7 +64,11 @@ export function SettingsPage({ healthData }) {
             </div>
             <div className="flex justify-between py-2">
               <span className="text-[#536050]">Telemetry Protocol:</span>
-              <span className="text-[#111813]">REST / JSON HTTP (TLS in Milestone 2)</span>
+              <span className="text-[#111813]">REST / JSON HTTP</span>
+            </div>
+            <div className="flex justify-between py-2">
+              <span className="text-[#536050]">Transfer Encryption:</span>
+              <span className="font-mono text-[11px] text-[#1a5935] font-semibold">AES-256-GCM (Authenticated)</span>
             </div>
           </div>
         </Card>

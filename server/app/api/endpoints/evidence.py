@@ -4,9 +4,9 @@ import hashlib
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, UploadFile, status
 from sqlalchemy.orm import Session
 
 from server.app.core.config import settings
@@ -89,14 +89,18 @@ async def _ingest_evidence(
     description: Optional[str],
     db: Session,
     signed_payload_hash: Optional[str] = None,
-) -> Evidence:
+    encryption_header: Optional[str] = None,
+) -> Tuple[Evidence, Optional[float]]:
     """
     Core evidence ingestion logic shared by both upload routes.
 
+    When ``encryption_header`` indicates encrypted transfer (e.g. 'AES-GCM-256'),
+    the streamed transfer payload is decrypted using the pre-shared AES key,
+    and genuine decryption latency is measured.
     When ``signed_payload_hash`` is provided (authenticated collector path),
-    the SHA-256 computed from the streamed bytes is cross-checked against it.
-    A mismatch means the payload was modified in transit and the upload is
-    rejected with HTTP 422.
+    the SHA-256 computed from the recovered original bytes is cross-checked against it.
+    A mismatch or decryption failure rejects the upload with HTTP 422.
+    Only recovered original evidence bytes are persisted on disk as the forensic artifact.
     """
     if not file.filename:
         raise HTTPException(
@@ -133,38 +137,51 @@ async def _ingest_evidence(
             detail="Illegal file storage path detected.",
         )
 
-    # Measure total ingestion time and streaming hashing time with monotonic timers
+    # Measure total ingestion time with monotonic timers
     t_ingest_start = time.perf_counter()
 
-    # Stream file to disk while computing SHA-256 (64 KB chunks)
-    hasher = hashlib.sha256()
-    file_size_bytes = 0
-    chunk_size = 65536
+    # Read uploaded file content
+    raw_incoming_bytes = await file.read()
+    decryption_duration_sec: Optional[float] = None
 
+    if encryption_header and encryption_header.strip().upper() == "AES-GCM-256":
+        if not settings.FORENSIGHT_ENCRYPTION_KEY:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=(
+                    "Evidence transfer encryption is enabled by collector, but server has no "
+                    "FORENSIGHT_ENCRYPTION_KEY configured."
+                ),
+            )
+        from server.app.core.crypto import decrypt_payload
+        try:
+            # Bind signed_payload_hash as AAD if available
+            aad = signed_payload_hash.encode("utf-8") if signed_payload_hash else None
+            decrypted_bytes, decryption_duration_sec = decrypt_payload(
+                encrypted_data=raw_incoming_bytes,
+                key=settings.FORENSIGHT_ENCRYPTION_KEY,
+                associated_data=aad,
+            )
+            final_bytes = decrypted_bytes
+        except ValueError as err:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Decryption verification failed: {str(err)}",
+            )
+    else:
+        final_bytes = raw_incoming_bytes
+
+    # Compute SHA-256 on recovered plaintext evidence
     t_hash_start = time.perf_counter()
-    try:
-        with open(destination_path, "wb") as dest_file:
-            while chunk := await file.read(chunk_size):
-                hasher.update(chunk)
-                dest_file.write(chunk)
-                file_size_bytes += len(chunk)
-    except Exception as exc:
-        if destination_path.exists():
-            destination_path.unlink()
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to write evidence artifact: {str(exc)}",
-        )
-    hashing_duration_sec = time.perf_counter() - t_hash_start
-
+    hasher = hashlib.sha256()
+    hasher.update(final_bytes)
     sha256_digest = hasher.hexdigest()
+    hashing_duration_sec = time.perf_counter() - t_hash_start
+    file_size_bytes = len(final_bytes)
 
-    # Authenticated path: cross-check streamed hash against the signed claim.
-    # Detects in-transit payload tampering.
+    # Authenticated path: cross-check recovered plaintext hash against signed claim
     if signed_payload_hash is not None:
         if sha256_digest.lower() != signed_payload_hash.lower():
-            if destination_path.exists():
-                destination_path.unlink()
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=(
@@ -173,6 +190,18 @@ async def _ingest_evidence(
                     "The artifact may have been modified in transit."
                 ),
             )
+
+    # Persist the recovered plaintext evidence on disk
+    try:
+        with open(destination_path, "wb") as dest_file:
+            dest_file.write(final_bytes)
+    except Exception as exc:
+        if destination_path.exists():
+            destination_path.unlink()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to write evidence artifact: {str(exc)}",
+        )
 
     now_utc = datetime.now(timezone.utc)
 
@@ -205,23 +234,24 @@ async def _ingest_evidence(
         )
 
     # Create the initial chain-of-custody record for the ACQUIRED event
+    is_encrypted_transfer = bool(encryption_header and encryption_header.strip().upper() == "AES-GCM-256")
+    custody_notes = (
+        f"Evidence artifact '{original_filename}' acquired via "
+        f"{'authenticated collector (AES-GCM encrypted transfer)' if is_encrypted_transfer else ('authenticated collector' if signed_payload_hash else 'browser UI')} upload. "
+        f"SHA-256: {sha256_digest}. Size: {file_size_bytes} bytes."
+    )
     custody_record = ChainOfCustody(
         evidence_id=evidence_record.evidence_id,
         action="ACQUIRED",
         actor=evidence_record.collector_id or "unknown",
         location=str(destination_path),
-        notes=(
-            f"Evidence artifact '{original_filename}' acquired via "
-            f"{'authenticated collector' if signed_payload_hash else 'browser UI'} upload. "
-            f"SHA-256: {sha256_digest}. Size: {file_size_bytes} bytes."
-        ),
+        notes=custody_notes,
         timestamp=now_utc,
     )
     try:
         db.add(custody_record)
         db.commit()
     except Exception:
-        # Non-fatal: evidence is already persisted; log but don't fail the upload
         db.rollback()
 
     total_ingestion_sec = time.perf_counter() - t_ingest_start
@@ -233,7 +263,7 @@ async def _ingest_evidence(
         duration_sec=hashing_duration_sec,
         sample_size_bytes=file_size_bytes,
         evidence_id=evidence_record.evidence_id,
-        system_info=f"ChunkSize: {chunk_size} bytes",
+        system_info="SHA-256 integrity verification",
     )
     record_benchmark(
         db=db,
@@ -243,8 +273,17 @@ async def _ingest_evidence(
         evidence_id=evidence_record.evidence_id,
         system_info=f"Storage: {destination_path.name}",
     )
+    if decryption_duration_sec is not None:
+        record_benchmark(
+            db=db,
+            benchmark_name="AES_DECRYPTION",
+            duration_sec=decryption_duration_sec,
+            sample_size_bytes=file_size_bytes,
+            evidence_id=evidence_record.evidence_id,
+            system_info="AES-256-GCM transfer payload authenticated decryption",
+        )
 
-    return evidence_record
+    return evidence_record, decryption_duration_sec
 
 
 # ---------------------------------------------------------------------------
@@ -265,13 +304,14 @@ async def upload_evidence(
     Streaming SHA-256 is computed and stored. No HMAC required on this
     route — it is intended for same-machine workstation uploads.
     """
-    record = await _ingest_evidence(
+    record, _ = await _ingest_evidence(
         file=file,
         source_device=source_device,
         collector_id=collector_id,
         description=description,
         db=db,
         signed_payload_hash=None,
+        encryption_header=None,
     )
     return record
 
@@ -290,7 +330,7 @@ async def upload_evidence(
         "Accepts forensic artifacts from authenticated collector nodes. "
         "Requires HMAC-SHA256 signed headers: X-ForenSight-Timestamp, "
         "X-ForenSight-Evidence-ID, X-ForenSight-Payload-Hash, "
-        "X-ForenSight-Signature."
+        "X-ForenSight-Signature. Supports AES-256-GCM transfer encryption."
     ),
 )
 async def upload_evidence_authenticated(
@@ -298,6 +338,11 @@ async def upload_evidence_authenticated(
     source_device: str = Form(default="local-workstation"),
     collector_id: Optional[str] = Form(default=None),
     description: Optional[str] = Form(default=None),
+    x_forensight_encryption: Optional[str] = Header(
+        None,
+        alias="X-ForenSight-Encryption",
+        description="Optional transfer encryption algorithm (e.g. AES-GCM-256).",
+    ),
     db: Session = Depends(get_db),
     auth_claims: dict = Depends(verify_hmac_signature),
 ) -> EvidenceRead:
@@ -305,17 +350,20 @@ async def upload_evidence_authenticated(
     Authenticated evidence upload for collector nodes.
 
     HMAC verification is enforced via the ``verify_hmac_signature``
-    dependency before any file I/O occurs. After streaming, the server
-    cross-checks the SHA-256 against the signed payload hash to detect
-    in-transit tampering.
+    dependency before any payload decryption or file storage occurs.
+    If transfer encryption is enabled, the server decrypts the ciphertext
+    using the pre-shared AES key, measures decryption duration, cross-checks
+    the recovered plaintext SHA-256 against the HMAC-signed payload hash,
+    and stores only the recovered original evidence artifact.
     """
-    record = await _ingest_evidence(
+    record, _ = await _ingest_evidence(
         file=file,
         source_device=source_device,
         collector_id=collector_id,
         description=description,
         db=db,
         signed_payload_hash=auth_claims["payload_hash"],
+        encryption_header=x_forensight_encryption,
     )
 
     # Record HMAC verification benchmark if measured in verify_hmac_signature

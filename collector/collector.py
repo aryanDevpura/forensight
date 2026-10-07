@@ -91,11 +91,25 @@ class EvidenceCollector:
         if not artifact.exists():
             return (False, {"error": f"File not found: {artifact}"})
 
-        # Read file bytes for hashing (kept in memory for signing; streamed on upload)
+        # Read file bytes for hashing
         file_bytes = artifact.read_bytes()
         t_hash = time.perf_counter()
         payload_hash = compute_payload_hash(file_bytes)
         payload_hashing_sec = time.perf_counter() - t_hash
+
+        # Encrypt evidence if encryption key is configured
+        encryption_duration_sec = 0.0
+        is_encrypted = False
+        bytes_to_send = file_bytes
+
+        if self.config.encryption_key:
+            from collector.crypto import encrypt_payload
+            bytes_to_send, encryption_duration_sec = encrypt_payload(
+                plaintext=file_bytes,
+                key=self.config.encryption_key,
+                associated_data=payload_hash.encode("utf-8"),
+            )
+            is_encrypted = True
 
         # Use a deterministic placeholder; the server generates the real ID on ingest.
         evidence_id_for_signing = evidence_id_override or f"PENDING-{artifact.name}"
@@ -105,6 +119,9 @@ class EvidenceCollector:
             evidence_id=evidence_id_for_signing,
             payload_hash=payload_hash,
         )
+
+        if is_encrypted:
+            auth_headers["X-ForenSight-Encryption"] = "AES-GCM-256"
 
         # Build multipart form-data manually using urllib (no external deps)
         boundary = "ForenSightBoundary1234567890"
@@ -128,7 +145,7 @@ class EvidenceCollector:
             field_part("source_device", source_device or self.config.collector_id)
             + field_part("collector_id", self.config.collector_id)
             + (field_part("description", description) if description else b"")
-            + file_part("file", artifact.name, file_bytes)
+            + file_part("file", artifact.name, bytes_to_send)
             + f"--{boundary}--\r\n".encode("utf-8")
         )
 
@@ -150,7 +167,10 @@ class EvidenceCollector:
                     "metrics": {
                         "payload_hashing_ms": round(payload_hashing_sec * 1000.0, 4),
                         "hmac_signing_ms": round(signing_duration_sec * 1000.0, 4),
+                        "encryption_ms": round(encryption_duration_sec * 1000.0, 4) if is_encrypted else None,
                         "file_size_bytes": len(file_bytes),
+                        "transfer_size_bytes": len(bytes_to_send),
+                        "is_encrypted": is_encrypted,
                     },
                 })
         except urllib.error.HTTPError as err:

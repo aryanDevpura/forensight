@@ -42,6 +42,11 @@ const OPERATION_LABELS = {
     desc: 'Server-side pre-shared key signature check',
     color: '#1e40af',
   },
+  AES_DECRYPTION: {
+    label: 'AES-GCM Decryption',
+    desc: 'Authenticated AES-256-GCM transfer payload recovery',
+    color: '#7c3aed',
+  },
   PCAP_ANALYSIS: {
     label: 'PCAP Analysis',
     desc: 'Binary packet parsing & threat heuristic inspection',
@@ -192,8 +197,8 @@ export function PerformancePage() {
       </div>
 
       {/* Operation Categories Performance Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        {['SHA256_HASHING', 'EVIDENCE_INGESTION', 'HMAC_VERIFICATION', 'PCAP_ANALYSIS'].map((key) => {
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+        {['SHA256_HASHING', 'EVIDENCE_INGESTION', 'HMAC_VERIFICATION', 'AES_DECRYPTION', 'PCAP_ANALYSIS'].map((key) => {
           const info = OPERATION_LABELS[key];
           const stats = operations[key];
 
@@ -353,6 +358,7 @@ export function PerformancePage() {
               <option value="SHA256_HASHING">SHA256_HASHING</option>
               <option value="EVIDENCE_INGESTION">EVIDENCE_INGESTION</option>
               <option value="HMAC_VERIFICATION">HMAC_VERIFICATION</option>
+              <option value="AES_DECRYPTION">AES_DECRYPTION</option>
               <option value="PCAP_ANALYSIS">PCAP_ANALYSIS</option>
             </select>
             <button
