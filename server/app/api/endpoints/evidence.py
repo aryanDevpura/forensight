@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, s
 from sqlalchemy.orm import Session
 
 from server.app.core.config import settings
+from server.app.core.hmac_auth import verify_hmac_signature
 from server.app.database.session import get_db
 from server.app.models.evidence import Evidence
 from server.app.api.endpoints.schemas import EvidenceRead
@@ -77,18 +78,21 @@ def generate_evidence_id() -> str:
     return f"EVD-{timestamp}-{unique_suffix}"
 
 
-@router.post("", response_model=EvidenceRead, status_code=status.HTTP_201_CREATED)
-async def upload_evidence(
-    file: UploadFile = File(...),
-    source_device: str = Form(default="local-workstation"),
-    collector_id: Optional[str] = Form(default=None),
-    description: Optional[str] = Form(default=None),
-    db: Session = Depends(get_db),
-) -> EvidenceRead:
+async def _ingest_evidence(
+    file: UploadFile,
+    source_device: str,
+    collector_id: Optional[str],
+    description: Optional[str],
+    db: Session,
+    signed_payload_hash: Optional[str] = None,
+) -> Evidence:
     """
-    Ingest forensic evidence artifact with streaming SHA-256 calculation.
-    Enforces safe filesystem path generation, file type verification,
-    and sets status to ACQUIRED.
+    Core evidence ingestion logic shared by both upload routes.
+
+    When ``signed_payload_hash`` is provided (authenticated collector path),
+    the SHA-256 computed from the streamed bytes is cross-checked against it.
+    A mismatch means the payload was modified in transit and the upload is
+    rejected with HTTP 422.
     """
     if not file.filename:
         raise HTTPException(
@@ -125,7 +129,7 @@ async def upload_evidence(
             detail="Illegal file storage path detected.",
         )
 
-    # Compute SHA-256 hash using streaming chunks (64 KB)
+    # Stream file to disk while computing SHA-256 (64 KB chunks)
     hasher = hashlib.sha256()
     file_size_bytes = 0
     chunk_size = 65536
@@ -137,7 +141,6 @@ async def upload_evidence(
                 dest_file.write(chunk)
                 file_size_bytes += len(chunk)
     except Exception as exc:
-        # Clean up partial file on failure
         if destination_path.exists():
             destination_path.unlink()
         raise HTTPException(
@@ -146,9 +149,24 @@ async def upload_evidence(
         )
 
     sha256_digest = hasher.hexdigest()
+
+    # Authenticated path: cross-check streamed hash against the signed claim.
+    # Detects in-transit payload tampering.
+    if signed_payload_hash is not None:
+        if sha256_digest.lower() != signed_payload_hash.lower():
+            if destination_path.exists():
+                destination_path.unlink()
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    "Payload integrity check failed: the SHA-256 of the received "
+                    "file does not match the hash included in the HMAC signature. "
+                    "The artifact may have been modified in transit."
+                ),
+            )
+
     now_utc = datetime.now(timezone.utc)
 
-    # Store record in SQLite database
     evidence_record = Evidence(
         evidence_id=evidence_id,
         file_name=original_filename,
@@ -159,7 +177,7 @@ async def upload_evidence(
         file_size_bytes=file_size_bytes,
         sha256_hash=sha256_digest,
         description=description.strip() if description else None,
-        status="ACQUIRED",  # Initial status: ACQUIRED, NOT VERIFIED
+        status="ACQUIRED",
         collected_at=now_utc,
         created_at=now_utc,
     )
@@ -179,6 +197,83 @@ async def upload_evidence(
 
     return evidence_record
 
+
+# ---------------------------------------------------------------------------
+# Route 1: Browser / UI upload (no HMAC required)
+#   Used by the React frontend on the same workstation.
+# ---------------------------------------------------------------------------
+
+@router.post("", response_model=EvidenceRead, status_code=status.HTTP_201_CREATED)
+async def upload_evidence(
+    file: UploadFile = File(...),
+    source_device: str = Form(default="local-workstation"),
+    collector_id: Optional[str] = Form(default=None),
+    description: Optional[str] = Form(default=None),
+    db: Session = Depends(get_db),
+) -> EvidenceRead:
+    """
+    Ingest a forensic evidence artifact from the local browser UI.
+    Streaming SHA-256 is computed and stored. No HMAC required on this
+    route — it is intended for same-machine workstation uploads.
+    """
+    record = await _ingest_evidence(
+        file=file,
+        source_device=source_device,
+        collector_id=collector_id,
+        description=description,
+        db=db,
+        signed_payload_hash=None,
+    )
+    return record
+
+
+# ---------------------------------------------------------------------------
+# Route 2: Collector upload (HMAC-SHA256 required)
+#   Used by collector nodes. Validates signature and payload integrity.
+# ---------------------------------------------------------------------------
+
+@router.post(
+    "/authenticated",
+    response_model=EvidenceRead,
+    status_code=status.HTTP_201_CREATED,
+    summary="Authenticated evidence upload (collector nodes only)",
+    description=(
+        "Accepts forensic artifacts from authenticated collector nodes. "
+        "Requires HMAC-SHA256 signed headers: X-ForenSight-Timestamp, "
+        "X-ForenSight-Evidence-ID, X-ForenSight-Payload-Hash, "
+        "X-ForenSight-Signature."
+    ),
+)
+async def upload_evidence_authenticated(
+    file: UploadFile = File(...),
+    source_device: str = Form(default="local-workstation"),
+    collector_id: Optional[str] = Form(default=None),
+    description: Optional[str] = Form(default=None),
+    db: Session = Depends(get_db),
+    auth_claims: dict = Depends(verify_hmac_signature),
+) -> EvidenceRead:
+    """
+    Authenticated evidence upload for collector nodes.
+
+    HMAC verification is enforced via the ``verify_hmac_signature``
+    dependency before any file I/O occurs. After streaming, the server
+    cross-checks the SHA-256 against the signed payload hash to detect
+    in-transit tampering.
+    """
+    record = await _ingest_evidence(
+        file=file,
+        source_device=source_device,
+        collector_id=collector_id,
+        description=description,
+        db=db,
+        signed_payload_hash=auth_claims["payload_hash"],
+    )
+    return record
+
+
+# ---------------------------------------------------------------------------
+# Route 3: List all evidence (no auth required — read-only)
+# ---------------------------------------------------------------------------
 
 @router.get("", response_model=List[EvidenceRead])
 def list_evidence(

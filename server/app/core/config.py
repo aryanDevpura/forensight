@@ -32,6 +32,13 @@ class Settings(BaseSettings):
     # CORS
     CORS_ORIGINS: str = "http://localhost:5173,http://127.0.0.1:5173"
 
+    # HMAC-SHA256 Authentication
+    # Pre-shared secret for collector → server request signing.
+    # Must be set in .env — no hardcoded default for security.
+    FORENSIGHT_HMAC_SECRET: str = ""
+    # Allowed clock skew for replay protection (seconds)
+    HMAC_REPLAY_WINDOW_SECONDS: int = 300
+
     @property
     def cors_origins_list(self) -> List[str]:
         return [origin.strip() for origin in self.CORS_ORIGINS.split(",") if origin.strip()]
