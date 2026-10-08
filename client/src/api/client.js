@@ -3,6 +3,8 @@
  * Connects to the FastAPI Investigation Server REST API
  */
 
+// Use VITE_API_URL if explicitly set (e.g. for standalone static production deployments),
+// otherwise default to '' so all browser requests route through the Vite /api proxy seamlessly.
 const BASE_URL = import.meta.env.VITE_API_URL || '';
 
 export async function fetchHealth() {

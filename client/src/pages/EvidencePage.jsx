@@ -278,7 +278,7 @@ export function EvidencePage({ onEvidenceUploaded }) {
                 <th className="py-2.5 px-3 font-semibold text-[11px] uppercase tracking-wider">Evidence ID</th>
                 <th className="py-2.5 px-3 font-semibold text-[11px] uppercase tracking-wider">File Name</th>
                 <th className="py-2.5 px-3 font-semibold text-[11px] uppercase tracking-wider">Type</th>
-                <th className="py-2.5 px-3 font-semibold text-[11px] uppercase tracking-wider">Source</th>
+                <th className="py-2.5 px-3 font-semibold text-[11px] uppercase tracking-wider">Source / Collector</th>
                 <th className="py-2.5 px-3 font-semibold text-[11px] uppercase tracking-wider">Collected At</th>
                 <th className="py-2.5 px-3 font-semibold text-[11px] uppercase tracking-wider">Size</th>
                 <th className="py-2.5 px-3 font-semibold text-[11px] uppercase tracking-wider">SHA-256 / Integrity</th>
@@ -324,8 +324,12 @@ export function EvidencePage({ onEvidenceUploaded }) {
                         {item.evidence_type}
                       </span>
                     </td>
-                    <td className="py-2.5 px-3 font-mono text-xs text-[#536050] whitespace-nowrap">
-                      {item.source_device}
+                    <td className="py-2.5 px-3 font-mono text-xs whitespace-nowrap">
+                      <div className="text-[#111813] font-medium">{item.source_device || 'local-workstation'}</div>
+                      <div className="text-[10px] text-[#536050] flex items-center gap-1 mt-0.5">
+                        <span className="font-sans">Node:</span>
+                        <span className="text-[#1b5e34]">{item.collector_id || 'collector-node-01'}</span>
+                      </div>
                     </td>
                     <td className="py-2.5 px-3 font-mono text-[11px] text-[#536050] whitespace-nowrap">
                       {item.collected_at

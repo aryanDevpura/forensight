@@ -45,6 +45,7 @@ server/storage/reports/*
 # Environment & IDE
 .env
 .env.*
+!.env.example
 .DS_Store
 .idea/
 .vscode/

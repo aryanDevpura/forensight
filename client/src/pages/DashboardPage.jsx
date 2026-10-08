@@ -16,7 +16,7 @@ export function DashboardPage({ healthData, statsData, error, isLoading }) {
             <div className="font-bold text-[#7f1d1d]">Backend Communication Failure</div>
             <div className="text-[#991b1b] mt-0.5">{error}</div>
             <div className="text-[#7f1d1d] mt-1 font-mono text-[11px]">
-              FastAPI server offline on http://127.0.0.1:8000. Start with: .\.venv\Scripts\python -m uvicorn server.app.main:app --reload
+              Unable to reach FastAPI server. Verify the Investigation Server is running and accessible via Vite proxy (check VITE_PROXY_TARGET in client/.env.local).
             </div>
           </div>
         </div>
@@ -159,7 +159,7 @@ export function DashboardPage({ healthData, statsData, error, isLoading }) {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
         <Card
           title="Evidence Collector Configuration"
-          subtitle="Client-side collection agent communication parameters"
+          subtitle="Collector node parameters for local or remote evidence transmission"
         >
           <div className="divide-y divide-[#eaede8] text-xs">
             <div className="flex justify-between py-2">
@@ -167,56 +167,62 @@ export function DashboardPage({ healthData, statsData, error, isLoading }) {
               <span className="font-mono text-[#111813] font-semibold">collector-node-01</span>
             </div>
             <div className="flex justify-between py-2">
-              <span className="text-[#536050]">Target Server Host:</span>
-              <span className="font-mono text-[#111813]">127.0.0.1</span>
+              <span className="text-[#536050]">Configured Target Host:</span>
+              <span className="font-mono text-[#111813]">Configurable (.env / Remote Host)</span>
             </div>
             <div className="flex justify-between py-2">
-              <span className="text-[#536050]">Target Server Port:</span>
+              <span className="text-[#536050]">Default Target Port:</span>
               <span className="font-mono text-[#111813]">8000</span>
             </div>
             <div className="flex justify-between py-2">
               <span className="text-[#536050]">Network Topology:</span>
-              <span className="text-[#1a5935] font-medium">Configurable Host/Port (Remote VM ready)</span>
+              <span className="text-[#1a5935] font-medium">Windows Collector → Ubuntu FastAPI Server</span>
             </div>
             <div className="flex justify-between py-2">
               <span className="text-[#536050]">Collector Status:</span>
-              <span className="text-[#536050] font-medium">{statsData?.collector_status || 'Standby'}</span>
+              <span className="text-[#536050] font-medium">{statsData?.collector_status || 'Configured (Standby)'}</span>
             </div>
           </div>
         </Card>
 
         <Card
-          title="Forensic Subsystem Pipeline"
-          subtitle="Architectural readiness and upcoming milestone roadmap"
+          title="Forensic Security & Pipeline Capabilities"
+          subtitle="Cryptographic integrity and analysis mechanisms supported by the platform"
         >
           <div className="divide-y divide-[#eaede8] text-xs">
             <div className="flex items-center justify-between py-2">
               <span className="text-[#111813] font-medium">FastAPI Server & SQLite Storage</span>
-              <StatusBadge status="ok" label="OPERATIONAL" size="xs" />
+              <StatusBadge status={isHealthy ? 'ok' : 'standby'} label={isHealthy ? 'ONLINE' : 'STANDBY'} size="xs" />
             </div>
             <div className="flex items-center justify-between py-2">
-              <span className="text-[#111813] font-medium">Local Storage Folders (evidence & reports)</span>
-              <StatusBadge status="ok" label="INITIALIZED" size="xs" />
+              <span className="text-[#111813] font-medium">HMAC-SHA256 Collector Authentication</span>
+              <span className="px-1.5 py-0.5 rounded-sm bg-[#faf8f3] text-[#1b5e34] border border-[#d7ded4] font-mono text-[10px] font-semibold">
+                CONFIGURED
+              </span>
             </div>
             <div className="flex items-center justify-between py-2">
-              <span className="text-[#111813] font-medium">Evidence Ingestion & Multipart Upload</span>
-              <StatusBadge status="ok" label="OPERATIONAL" size="xs" />
+              <span className="text-[#111813] font-medium">AES-256-GCM Transfer Encryption</span>
+              <span className="px-1.5 py-0.5 rounded-sm bg-[#faf8f3] text-[#1b5e34] border border-[#d7ded4] font-mono text-[10px] font-semibold">
+                SUPPORTED
+              </span>
             </div>
             <div className="flex items-center justify-between py-2">
-              <span className="text-[#111813] font-medium">SHA-256 Streaming Acquisition Hashing</span>
-              <StatusBadge status="ok" label="OPERATIONAL" size="xs" />
+              <span className="text-[#111813] font-medium">SHA-256 Payload Integrity Verification</span>
+              <span className="px-1.5 py-0.5 rounded-sm bg-[#faf8f3] text-[#1b5e34] border border-[#d7ded4] font-mono text-[10px] font-semibold">
+                ENFORCED ON UPLOAD
+              </span>
             </div>
             <div className="flex items-center justify-between py-2">
-              <span className="text-[#536050]">HMAC-SHA256 Auth & Nonce Replay Defense</span>
-              <span className="font-mono text-[11px] text-[#6c7a68]">Milestone 3</span>
+              <span className="text-[#111813] font-medium">Forensic Timeline & Correlation Engine</span>
+              <span className="px-1.5 py-0.5 rounded-sm bg-[#faf8f3] text-[#111813] border border-[#d7ded4] font-mono text-[10px] font-semibold">
+                READY
+              </span>
             </div>
             <div className="flex items-center justify-between py-2">
-              <span className="text-[#536050]">PyShark PCAP Inspection & Beaconing Detection</span>
-              <span className="font-mono text-[11px] text-[#6c7a68]">Milestone 4</span>
-            </div>
-            <div className="flex items-center justify-between py-2">
-              <span className="text-[#536050]">Forensic Report Export & Benchmark Suite</span>
-              <span className="font-mono text-[11px] text-[#6c7a68]">Milestone 5</span>
+              <span className="text-[#111813] font-medium">Monotonic Benchmark Instrumentation</span>
+              <span className="px-1.5 py-0.5 rounded-sm bg-[#faf8f3] text-[#111813] border border-[#d7ded4] font-mono text-[10px] font-semibold">
+                {statsData?.benchmark_runs_count ? `${statsData.benchmark_runs_count} RUNS RECORDED` : 'READY'}
+              </span>
             </div>
           </div>
         </Card>

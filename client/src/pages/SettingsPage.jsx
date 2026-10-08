@@ -48,7 +48,7 @@ export function SettingsPage({ healthData }) {
             </div>
             <div className="flex justify-between py-2">
               <span className="text-[#536050]">Target Server Host:</span>
-              <span className="font-mono text-[#111813]">127.0.0.1 (Configurable via .env)</span>
+              <span className="font-mono text-[#111813]">Configurable via .env (e.g. 10.145.1.178)</span>
             </div>
             <div className="flex justify-between py-2">
               <span className="text-[#536050]">Target Server Port:</span>
@@ -60,7 +60,15 @@ export function SettingsPage({ healthData }) {
             </div>
             <div className="flex justify-between py-2">
               <span className="text-[#536050]">Server Probe Target:</span>
-              <span className="font-mono text-[11px] text-[#1a5935]">http://127.0.0.1:8000/api/health</span>
+              <span className="font-mono text-[11px] text-[#1a5935]">
+                {import.meta.env.VITE_API_URL ? `${import.meta.env.VITE_API_URL}/api/health` : '/api/health (Proxy: 8000)'}
+              </span>
+            </div>
+            <div className="flex justify-between py-2">
+              <span className="text-[#536050]">Connected Server Host:</span>
+              <span className="font-mono text-[11px] text-[#111813]">
+                {import.meta.env.VITE_API_URL || 'Local / Vite Proxy Target'}
+              </span>
             </div>
             <div className="flex justify-between py-2">
               <span className="text-[#536050]">Telemetry Protocol:</span>
