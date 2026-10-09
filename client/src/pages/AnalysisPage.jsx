@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Card } from '../components/common/Card';
 import { StatusBadge } from '../components/common/StatusBadge';
-import { fetchEvidence, triggerAnalysis, fetchFindings } from '../api/client';
+import { fetchEvidence, triggerAnalysis, fetchFindings, fetchParserBackend } from '../api/client';
 import {
   Activity,
   Play,
@@ -35,6 +35,7 @@ export function AnalysisPage() {
   const [isLoadingFindings, setIsLoadingFindings] = useState(false);
   const [error, setError] = useState(null);
   const [successMessage, setSuccessMessage] = useState(null);
+  const [parserBackend, setParserBackend] = useState(null);
 
   // Load available evidence list
   const loadEvidence = useCallback(async () => {
@@ -62,6 +63,13 @@ export function AnalysisPage() {
   useEffect(() => {
     loadEvidence();
   }, [loadEvidence]);
+
+  // Fetch parser backend info once on mount
+  useEffect(() => {
+    fetchParserBackend()
+      .then((info) => setParserBackend(info))
+      .catch(() => {}); // fail silently — label stays loading
+  }, []);
 
   // When selectedEvidenceId changes, load any existing findings
   const loadFindingsForSelected = useCallback(async (evId) => {
@@ -174,7 +182,12 @@ export function AnalysisPage() {
               <RefreshCw className={`w-3.5 h-3.5 ${isLoadingEvidence ? 'animate-spin' : ''}`} />
             </button>
             <div className="text-[11px] font-mono text-[#536050] bg-[#faf8f3] px-2 py-0.5 border border-[#d7ded4] rounded-sm">
-              Engine: Pure-Python PCAP Parser
+              Engine:{' '}
+              {parserBackend === null
+                ? '…'
+                : parserBackend.backend === 'pyshark'
+                ? 'PyShark / TShark'
+                : 'Pure-Python PCAP Parser'}
             </div>
           </div>
         }

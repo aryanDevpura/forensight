@@ -5,7 +5,7 @@ Provides endpoints for executing forensic analysis on acquired evidence
 artifacts and querying detected forensic findings.
 """
 
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
@@ -17,8 +17,23 @@ from server.app.api.endpoints.schemas import (
     FindingRead,
 )
 from server.app.services.pcap_analyzer import analyze_pcap_evidence
+from server.app.services.pcap_parser import backend_info
 
 router = APIRouter(prefix="/analysis", tags=["Forensic Analysis"])
+
+
+@router.get(
+    "/backend",
+    summary="PCAP parser backend information",
+    description=(
+        "Returns the active PCAP parsing backend (PyShark/tshark or pure-Python fallback) "
+        "and its capabilities. The backend is selected automatically based on tshark availability."
+    ),
+)
+def get_parser_backend() -> Dict[str, Any]:
+    """Returns which PCAP parser backend is active on the server."""
+    return backend_info()
+
 
 
 @router.post(

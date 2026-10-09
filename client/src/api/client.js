@@ -71,6 +71,14 @@ export async function triggerAnalysis(evidenceId) {
   return await response.json();
 }
 
+export async function fetchParserBackend() {
+  const response = await fetch(`${BASE_URL}/api/analysis/backend`, {
+    headers: { 'Accept': 'application/json' },
+  });
+  if (!response.ok) throw new Error(`Parser backend query returned HTTP ${response.status}`);
+  return await response.json();
+}
+
 export async function fetchFindings(evidenceId = null) {
   const url = evidenceId
     ? `${BASE_URL}/api/analysis/findings/${encodeURIComponent(evidenceId)}`
