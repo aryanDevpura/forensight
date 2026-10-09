@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Card } from '../components/common/Card';
 import { StatusBadge } from '../components/common/StatusBadge';
-import { fetchEvidence, uploadEvidence } from '../api/client';
-import { Upload, Inbox, CheckCircle2, AlertTriangle, FileCode, RefreshCw, X } from 'lucide-react';
+import { fetchEvidence, uploadEvidence, verifyEvidence } from '../api/client';
+import { Upload, Inbox, CheckCircle2, AlertTriangle, FileCode, RefreshCw, X, ShieldCheck, ShieldAlert } from 'lucide-react';
 
 function formatBytes(bytes) {
   if (bytes === 0) return '0 B';
@@ -23,6 +23,9 @@ export function EvidencePage({ onEvidenceUploaded }) {
   const [description, setDescription] = useState('');
   const [successMessage, setSuccessMessage] = useState(null);
   const [errorMessage, setErrorMessage] = useState(null);
+  const [verifyingMap, setVerifyingMap] = useState({});
+  const [verificationResults, setVerificationResults] = useState({});
+  const [verificationNotification, setVerificationNotification] = useState(null);
   const fileInputRef = useRef(null);
 
   const loadEvidence = useCallback(async () => {
@@ -91,8 +94,108 @@ export function EvidencePage({ onEvidenceUploaded }) {
     }
   };
 
+  const handleVerify = async (evidenceId) => {
+    setVerifyingMap((prev) => ({ ...prev, [evidenceId]: true }));
+    setVerificationNotification(null);
+
+    try {
+      const result = await verifyEvidence(evidenceId);
+      setVerificationResults((prev) => ({
+        ...prev,
+        [evidenceId]: result,
+      }));
+
+      if (result.status === 'INTACT') {
+        setVerificationNotification({
+          type: 'success',
+          evidenceId: result.evidence_id,
+          title: 'Integrity Verified — INTACT',
+          message: result.message,
+          storedHash: result.stored_hash,
+          currentHash: result.current_hash,
+        });
+      } else if (result.status === 'TAMPERED') {
+        setVerificationNotification({
+          type: 'error',
+          evidenceId: result.evidence_id,
+          title: 'Integrity Violation Detected — TAMPERED',
+          message: result.message,
+          storedHash: result.stored_hash,
+          currentHash: result.current_hash,
+        });
+      } else {
+        setVerificationNotification({
+          type: 'warning',
+          evidenceId: result.evidence_id,
+          title: `Integrity Check Alert — ${result.status}`,
+          message: result.message,
+          storedHash: result.stored_hash,
+          currentHash: result.current_hash,
+        });
+      }
+
+      if (onEvidenceUploaded) {
+        onEvidenceUploaded();
+      }
+    } catch (err) {
+      setVerificationNotification({
+        type: 'error',
+        evidenceId,
+        title: 'Integrity Verification Failed',
+        message: err.message || 'Unable to complete verification check against Investigation Server.',
+      });
+    } finally {
+      setVerifyingMap((prev) => ({ ...prev, [evidenceId]: false }));
+    }
+  };
+
   return (
     <div className="space-y-5">
+      {/* Verification Notification Banner */}
+      {verificationNotification && (
+        <div
+          className={`p-3.5 rounded-sm text-xs flex items-start justify-between gap-3 border ${
+            verificationNotification.type === 'success'
+              ? 'bg-[#f0f9f3] border-[#227244]/40 text-[#144629]'
+              : verificationNotification.type === 'warning'
+              ? 'bg-[#fef3c7] border-[#f59e0b]/50 text-[#92400e]'
+              : 'bg-[#fee2e2] border-[#ef4444] text-[#991b1b]'
+          }`}
+        >
+          <div className="flex items-start gap-2.5">
+            {verificationNotification.type === 'success' ? (
+              <ShieldCheck className="w-4 h-4 shrink-0 text-[#1a5935] mt-0.5" />
+            ) : (
+              <ShieldAlert className="w-4 h-4 shrink-0 text-[#991b1b] mt-0.5" />
+            )}
+            <div className="space-y-1">
+              <div className="font-bold flex items-center gap-2">
+                <span>{verificationNotification.title}</span>
+                <span className="font-mono text-[11px] font-semibold px-1.5 py-0.5 rounded-sm bg-black/5">
+                  {verificationNotification.evidenceId}
+                </span>
+              </div>
+              <div className="text-[11px] leading-relaxed">
+                {verificationNotification.message}
+              </div>
+              {verificationNotification.storedHash && verificationNotification.currentHash && (
+                <div className="mt-1.5 font-mono text-[10px] space-y-0.5 bg-white/60 p-2 rounded-sm border border-black/10">
+                  <div>Stored Acquisition Hash: <span className="font-semibold">{verificationNotification.storedHash}</span></div>
+                  <div>Current On-Disk Hash:    <span className="font-semibold">{verificationNotification.currentHash}</span></div>
+                </div>
+              )}
+            </div>
+          </div>
+          <button
+            onClick={() => setVerificationNotification(null)}
+            className="text-current opacity-70 hover:opacity-100 text-xs shrink-0 p-0.5"
+            title="Dismiss notification"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
       {/* Success Notification */}
       {successMessage && (
         <div className="p-3.5 bg-[#f0f9f3] border border-[#227244]/40 rounded-sm text-[#144629] text-xs flex items-start justify-between gap-3">
@@ -272,7 +375,7 @@ export function EvidencePage({ onEvidenceUploaded }) {
         }
       >
         <div className="border border-[#d7ded4] rounded-sm overflow-x-auto bg-white">
-          <table className="w-full text-left text-xs min-w-[800px]">
+          <table className="w-full text-left text-xs min-w-[900px]">
             <thead className="bg-[#faf8f3] text-[#3e483c] border-b border-[#d7ded4]">
               <tr>
                 <th className="py-2.5 px-3 font-semibold text-[11px] uppercase tracking-wider">Evidence ID</th>
@@ -281,14 +384,15 @@ export function EvidencePage({ onEvidenceUploaded }) {
                 <th className="py-2.5 px-3 font-semibold text-[11px] uppercase tracking-wider">Source / Collector</th>
                 <th className="py-2.5 px-3 font-semibold text-[11px] uppercase tracking-wider">Collected At</th>
                 <th className="py-2.5 px-3 font-semibold text-[11px] uppercase tracking-wider">Size</th>
-                <th className="py-2.5 px-3 font-semibold text-[11px] uppercase tracking-wider">SHA-256 / Integrity</th>
-                <th className="py-2.5 px-3 font-semibold text-[11px] uppercase tracking-wider">Status</th>
+                <th className="py-2.5 px-3 font-semibold text-[11px] uppercase tracking-wider">SHA-256 Digest</th>
+                <th className="py-2.5 px-3 font-semibold text-[11px] uppercase tracking-wider">Integrity Status</th>
+                <th className="py-2.5 px-3 font-semibold text-[11px] uppercase tracking-wider text-right">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-[#eaede8] bg-white">
               {isLoading && evidenceList.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="py-10 text-center text-[#536050]">
+                  <td colSpan={9} className="py-10 text-center text-[#536050]">
                     <div className="flex items-center justify-center gap-2">
                       <RefreshCw className="w-4 h-4 animate-spin text-[#1b5e34]" />
                       <span>Loading evidence catalog...</span>
@@ -297,7 +401,7 @@ export function EvidencePage({ onEvidenceUploaded }) {
                 </tr>
               ) : evidenceList.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="py-14 text-center text-[#536050]">
+                  <td colSpan={9} className="py-14 text-center text-[#536050]">
                     <div className="flex flex-col items-center justify-center gap-2">
                       <Inbox className="w-7 h-7 text-[#94a190]" />
                       <p className="text-sm font-semibold text-[#111813]">No Evidence Registered</p>
@@ -308,54 +412,100 @@ export function EvidencePage({ onEvidenceUploaded }) {
                   </td>
                 </tr>
               ) : (
-                evidenceList.map((item) => (
-                  <tr key={item.id || item.evidence_id} className="hover:bg-[#faf8f3] transition-colors">
-                    <td className="py-2.5 px-3 font-mono text-[11px] font-semibold text-[#111813] whitespace-nowrap">
-                      {item.evidence_id}
-                    </td>
-                    <td className="py-2.5 px-3 font-mono text-xs text-[#111813] font-medium whitespace-nowrap">
-                      <span className="flex items-center gap-1.5">
-                        <FileCode className="w-3.5 h-3.5 text-[#536050] shrink-0" />
-                        <span title={item.file_name}>{item.file_name}</span>
-                      </span>
-                    </td>
-                    <td className="py-2.5 px-3 whitespace-nowrap">
-                      <span className="px-1.5 py-0.5 rounded-sm bg-[#eaede8] text-[#3e483c] font-mono text-[10px] font-semibold">
-                        {item.evidence_type}
-                      </span>
-                    </td>
-                    <td className="py-2.5 px-3 font-mono text-xs whitespace-nowrap">
-                      <div className="text-[#111813] font-medium">{item.source_device || 'local-workstation'}</div>
-                      <div className="text-[10px] text-[#536050] flex items-center gap-1 mt-0.5">
-                        <span className="font-sans">Node:</span>
-                        <span className="text-[#1b5e34]">{item.collector_id || 'collector-node-01'}</span>
-                      </div>
-                    </td>
-                    <td className="py-2.5 px-3 font-mono text-[11px] text-[#536050] whitespace-nowrap">
-                      {item.collected_at
-                        ? new Date(item.collected_at).toISOString().replace('T', ' ').slice(0, 19) + ' UTC'
-                        : 'N/A'}
-                    </td>
-                    <td className="py-2.5 px-3 font-mono text-xs text-[#111813] whitespace-nowrap">
-                      {formatBytes(item.file_size_bytes)}
-                    </td>
-                    <td className="py-2.5 px-3 font-mono text-[11px] text-[#111813] whitespace-nowrap">
-                      <span
-                        className="bg-[#faf8f3] px-1.5 py-0.5 rounded-sm border border-[#d7ded4] select-all cursor-text"
-                        title={`Full SHA-256 Digest:\n${item.sha256_hash}`}
-                      >
-                        {item.sha256_hash.slice(0, 12)}...{item.sha256_hash.slice(-8)}
-                      </span>
-                    </td>
-                    <td className="py-2.5 px-3 whitespace-nowrap">
-                      <StatusBadge
-                        status="standby"
-                        label={item.status || 'ACQUIRED'}
-                        size="xs"
-                      />
-                    </td>
-                  </tr>
-                ))
+                evidenceList.map((item) => {
+                  const isVerifying = !!verifyingMap[item.evidence_id];
+                  const vResult = verificationResults[item.evidence_id];
+
+                  return (
+                    <tr key={item.id || item.evidence_id} className="hover:bg-[#faf8f3] transition-colors">
+                      <td className="py-2.5 px-3 font-mono text-[11px] font-semibold text-[#111813] whitespace-nowrap">
+                        {item.evidence_id}
+                      </td>
+                      <td className="py-2.5 px-3 font-mono text-xs text-[#111813] font-medium whitespace-nowrap">
+                        <span className="flex items-center gap-1.5">
+                          <FileCode className="w-3.5 h-3.5 text-[#536050] shrink-0" />
+                          <span title={item.file_name}>{item.file_name}</span>
+                        </span>
+                      </td>
+                      <td className="py-2.5 px-3 whitespace-nowrap">
+                        <span className="px-1.5 py-0.5 rounded-sm bg-[#eaede8] text-[#3e483c] font-mono text-[10px] font-semibold">
+                          {item.evidence_type}
+                        </span>
+                      </td>
+                      <td className="py-2.5 px-3 font-mono text-xs whitespace-nowrap">
+                        <div className="text-[#111813] font-medium">{item.source_device || 'local-workstation'}</div>
+                        <div className="text-[10px] text-[#536050] flex items-center gap-1 mt-0.5">
+                          <span className="font-sans">Node:</span>
+                          <span className="text-[#1b5e34]">{item.collector_id || 'collector-node-01'}</span>
+                        </div>
+                      </td>
+                      <td className="py-2.5 px-3 font-mono text-[11px] text-[#536050] whitespace-nowrap">
+                        {item.collected_at
+                          ? new Date(item.collected_at).toISOString().replace('T', ' ').slice(0, 19) + ' UTC'
+                          : 'N/A'}
+                      </td>
+                      <td className="py-2.5 px-3 font-mono text-xs text-[#111813] whitespace-nowrap">
+                        {formatBytes(item.file_size_bytes)}
+                      </td>
+                      <td className="py-2.5 px-3 font-mono text-[11px] text-[#111813] whitespace-nowrap">
+                        <span
+                          className="bg-[#faf8f3] px-1.5 py-0.5 rounded-sm border border-[#d7ded4] select-all cursor-text"
+                          title={`Full Acquisition SHA-256 Digest:\n${item.sha256_hash}`}
+                        >
+                          {item.sha256_hash.slice(0, 12)}...{item.sha256_hash.slice(-8)}
+                        </span>
+                      </td>
+                      <td className="py-2.5 px-3 whitespace-nowrap">
+                        {vResult ? (
+                          <div>
+                            <StatusBadge
+                              status={vResult.status.toLowerCase()}
+                              label={vResult.status}
+                              size="xs"
+                            />
+                            <span
+                              className={`block text-[10px] font-mono mt-0.5 ${
+                                vResult.is_intact ? 'text-[#1a5935]' : 'text-[#991b1b] font-semibold'
+                              }`}
+                            >
+                              {vResult.is_intact ? 'SHA-256 Intact' : 'Tampered / Mismatch'}
+                            </span>
+                          </div>
+                        ) : (
+                          <StatusBadge
+                            status="standby"
+                            label={item.status || 'ACQUIRED'}
+                            size="xs"
+                          />
+                        )}
+                      </td>
+                      <td className="py-2.5 px-3 whitespace-nowrap text-right">
+                        <button
+                          onClick={() => handleVerify(item.evidence_id)}
+                          disabled={isVerifying}
+                          className={`inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-sm border transition-colors ${
+                            isVerifying
+                              ? 'bg-[#eaede8] text-[#536050] border-[#bdc7ba] cursor-wait'
+                              : 'bg-[#f4f1ea] hover:bg-[#eaede8] text-[#1b5e34] hover:text-[#144629] border-[#bdc7ba] hover:border-[#1b5e34]'
+                          }`}
+                          title={`Recalculate SHA-256 on disk and compare with stored acquisition hash for ${item.evidence_id}`}
+                        >
+                          {isVerifying ? (
+                            <>
+                              <RefreshCw className="w-3.5 h-3.5 animate-spin text-[#1b5e34]" />
+                              <span>Verifying...</span>
+                            </>
+                          ) : (
+                            <>
+                              <ShieldCheck className="w-3.5 h-3.5 text-[#1b5e34]" />
+                              <span>Verify Integrity</span>
+                            </>
+                          )}
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })
               )}
             </tbody>
           </table>

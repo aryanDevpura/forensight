@@ -56,6 +56,21 @@ export async function uploadEvidence(formData) {
   return await response.json();
 }
 
+export async function verifyEvidence(evidenceId) {
+  const response = await fetch(`${BASE_URL}/api/evidence/${encodeURIComponent(evidenceId)}/verify`, {
+    method: 'POST',
+    headers: {
+      'Accept': 'application/json',
+    },
+  });
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => null);
+    const message = errorData?.detail || `Integrity verification failed: HTTP ${response.status}`;
+    throw new Error(message);
+  }
+  return await response.json();
+}
+
 export async function triggerAnalysis(evidenceId) {
   const response = await fetch(`${BASE_URL}/api/analysis/${encodeURIComponent(evidenceId)}`, {
     method: 'POST',

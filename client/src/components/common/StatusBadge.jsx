@@ -12,7 +12,8 @@ export function StatusBadge({ status, label, size = 'sm' }) {
     normalized === 'operational' ||
     normalized === 'available' ||
     normalized === 'running' ||
-    normalized === 'verified'
+    normalized === 'verified' ||
+    normalized === 'intact'
   ) {
     dotColor = 'bg-[#1a5935]';
     badgeStyle = 'bg-[#f0f9f3] text-[#144629] border-[#227244]/40';
@@ -29,6 +30,7 @@ export function StatusBadge({ status, label, size = 'sm' }) {
     normalized === 'offline' ||
     normalized === 'disconnected' ||
     normalized === 'missing' ||
+    normalized === 'file_missing' ||
     normalized === 'tampered' ||
     normalized === 'critical'
   ) {
