@@ -51,6 +51,7 @@ class EvidenceRead(EvidenceBase):
     file_size_bytes: int
     sha256_hash: str
     status: str
+    is_encrypted: bool = False
     collected_at: datetime
     created_at: datetime
 

@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Response, UploadFile, status
 from sqlalchemy.orm import Session
 
 from server.app.core.config import settings
@@ -191,10 +191,41 @@ async def _ingest_evidence(
                 ),
             )
 
-    # Persist the recovered plaintext evidence on disk
+    # ------------------------------------------------------------------ #
+    # At-rest encryption (server-side)                                    #
+    # If FORENSIGHT_ENCRYPTION_KEY is configured, encrypt the in-memory   #
+    # payload before persisting to disk. Plaintext bytes never touch the  #
+    # storage filesystem when encryption is active.                      #
+    # The stored sha256_hash ALWAYS reflects the plaintext SHA-256 so     #
+    # integrity verification can recover and re-check the original bytes. #
+    # ------------------------------------------------------------------ #
+    bytes_to_write = final_bytes
+    is_encrypted_at_rest = False
+
+    if settings.FORENSIGHT_ENCRYPTION_KEY:
+        from server.app.core.crypto import encrypt_payload as _encrypt_payload
+        try:
+            encrypted_bytes, _ = _encrypt_payload(
+                final_bytes,
+                settings.FORENSIGHT_ENCRYPTION_KEY,
+            )
+            bytes_to_write = encrypted_bytes
+            is_encrypted_at_rest = True
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"At-rest encryption failed; evidence not stored: {str(exc)}",
+            )
+    elif getattr(settings, "FORENSIGHT_REQUIRE_ENCRYPTION", False):
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Evidence encryption is required (FORENSIGHT_REQUIRE_ENCRYPTION=true) but FORENSIGHT_ENCRYPTION_KEY is not configured.",
+        )
+
+    # Persist artifact on disk (ciphertext if encrypted, plaintext if unencrypted)
     try:
         with open(destination_path, "wb") as dest_file:
-            dest_file.write(final_bytes)
+            dest_file.write(bytes_to_write)
     except Exception as exc:
         if destination_path.exists():
             destination_path.unlink()
@@ -216,6 +247,7 @@ async def _ingest_evidence(
         sha256_hash=sha256_digest,
         description=description.strip() if description else None,
         status="ACQUIRED",
+        is_encrypted=is_encrypted_at_rest,
         collected_at=now_utc,
         created_at=now_utc,
     )
@@ -235,10 +267,11 @@ async def _ingest_evidence(
 
     # Create the initial chain-of-custody record for the ACQUIRED event
     is_encrypted_transfer = bool(encryption_header and encryption_header.strip().upper() == "AES-GCM-256")
+    encryption_note = " Artifact encrypted at rest (AES-256-GCM server-side)." if is_encrypted_at_rest else ""
     custody_notes = (
         f"Evidence artifact '{original_filename}' acquired via "
         f"{'authenticated collector (AES-GCM encrypted transfer)' if is_encrypted_transfer else ('authenticated collector' if signed_payload_hash else 'browser UI')} upload. "
-        f"SHA-256: {sha256_digest}. Size: {file_size_bytes} bytes."
+        f"SHA-256 (plaintext): {sha256_digest}. Size: {file_size_bytes} bytes.{encryption_note}"
     )
     custody_record = ChainOfCustody(
         evidence_id=evidence_record.evidence_id,
@@ -423,7 +456,15 @@ def verify_evidence_integrity(
             detail=f"Evidence artifact '{evidence_id}' not found in the database.",
         )
 
-    target_path = Path(evidence.file_path)
+    evidence_dir = settings.resolved_evidence_dir.resolve()
+    target_path = Path(evidence.file_path).resolve()
+    try:
+        target_path.relative_to(evidence_dir)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Access denied: evidence file path is outside the authorized storage directory.",
+        )
 
     # ------------------------------------------------------------------ #
     # Case 1: File is missing from disk                                    #
@@ -456,22 +497,68 @@ def verify_evidence_integrity(
         )
 
     # ------------------------------------------------------------------ #
-    # Case 2: File exists — recalculate hash in 64 KB chunks               #
+    # Case 2: File exists — read and (if encrypted at rest) decrypt first  #
+    # The stored sha256_hash is always the PLAINTEXT hash.                #
+    # For encrypted artifacts, we must decrypt before comparing hashes.   #
     # ------------------------------------------------------------------ #
-    hasher = hashlib.sha256()
     try:
         with open(target_path, "rb") as fh:
-            while True:
-                chunk = fh.read(65536)
-                if not chunk:
-                    break
-                hasher.update(chunk)
+            raw_disk_bytes = fh.read()
     except OSError as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Could not read evidence file for integrity check: {exc}",
         )
 
+    if evidence.is_encrypted:
+        from server.app.core.crypto import decrypt_payload as _decrypt_payload
+        from server.app.core.config import settings as _settings
+        if not _settings.FORENSIGHT_ENCRYPTION_KEY:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=(
+                    "Evidence artifact is encrypted at rest but FORENSIGHT_ENCRYPTION_KEY "
+                    "is not configured on this server. Cannot perform integrity check."
+                ),
+            )
+        try:
+            bytes_to_hash, _ = _decrypt_payload(raw_disk_bytes, _settings.FORENSIGHT_ENCRYPTION_KEY)
+        except ValueError:
+            # GCM tag mismatch — ciphertext was tampered
+            current_hash = None
+            is_intact = False
+            integrity_status = "TAMPERED"
+            custody_notes = (
+                f"Integrity check FAILED — AES-GCM decryption rejected (authentication tag mismatch). "
+                f"Stored acquisition hash: {evidence.sha256_hash}. "
+                f"The artifact's encrypted container has been corrupted or tampered with."
+            )
+            message = (
+                "INTEGRITY VIOLATION: AES-GCM authentication tag mismatch — the encrypted artifact "
+                "has been corrupted or tampered with after acquisition."
+            )
+            custody_record = ChainOfCustody(
+                evidence_id=evidence.evidence_id,
+                action="INTEGRITY_CHECK",
+                actor="forensight-integrity-verifier",
+                location=str(target_path),
+                notes=custody_notes,
+                timestamp=now_utc,
+            )
+            db.add(custody_record)
+            db.commit()
+            return EvidenceIntegrityResult(
+                evidence_id=evidence_id,
+                is_intact=False,
+                stored_hash=evidence.sha256_hash,
+                current_hash=None,
+                status=integrity_status,
+                message=message,
+            )
+    else:
+        bytes_to_hash = raw_disk_bytes
+
+    hasher = hashlib.sha256(bytes_to_hash)
     current_hash = hasher.hexdigest()
     is_intact = current_hash.lower() == evidence.sha256_hash.lower()
 
@@ -533,3 +620,98 @@ def list_evidence(
     """
     records = db.query(Evidence).order_by(Evidence.created_at.desc()).all()
     return records
+
+
+@router.get("/{evidence_id}", response_model=EvidenceRead, summary="Get evidence artifact metadata")
+def get_evidence(
+    evidence_id: str,
+    db: Session = Depends(get_db),
+) -> EvidenceRead:
+    """Retrieve metadata for a single evidence artifact."""
+    evidence = db.query(Evidence).filter(Evidence.evidence_id == evidence_id).first()
+    if evidence is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Evidence artifact '{evidence_id}' not found in database.",
+        )
+    return evidence
+
+
+@router.get(
+    "/{evidence_id}/download",
+    summary="Download evidence artifact (decrypted if encrypted at rest)",
+    description=(
+        "Retrieves and returns the original plaintext evidence artifact. "
+        "If the artifact was encrypted at rest with AES-256-GCM, it is safely "
+        "decrypted on the fly, verifying authentication tag before transmission. "
+        "Records an ACCESS chain-of-custody audit event."
+    ),
+)
+def download_evidence(
+    evidence_id: str,
+    db: Session = Depends(get_db),
+) -> Response:
+    evidence = db.query(Evidence).filter(Evidence.evidence_id == evidence_id).first()
+    if evidence is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Evidence artifact '{evidence_id}' not found.",
+        )
+    evidence_dir = settings.resolved_evidence_dir.resolve()
+    target_path = Path(evidence.file_path).resolve()
+    try:
+        target_path.relative_to(evidence_dir)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Access denied: evidence file path is outside the authorized storage directory.",
+        )
+    if not target_path.exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Evidence file not found on disk at '{target_path}'.",
+        )
+    raw_bytes = target_path.read_bytes()
+    if evidence.is_encrypted:
+        from server.app.core.crypto import decrypt_payload as _decrypt_payload
+        from server.app.core.config import settings as _settings
+        if not _settings.FORENSIGHT_ENCRYPTION_KEY:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Artifact is encrypted at rest but FORENSIGHT_ENCRYPTION_KEY is not configured.",
+            )
+        try:
+            content_bytes, _ = _decrypt_payload(raw_bytes, _settings.FORENSIGHT_ENCRYPTION_KEY)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Decryption failed: integrity authentication tag mismatch ({exc}).",
+            )
+    else:
+        content_bytes = raw_bytes
+
+    # Record chain-of-custody audit record for artifact download
+    now_utc = datetime.now(timezone.utc)
+    custody_record = ChainOfCustody(
+        evidence_id=evidence.evidence_id,
+        action="DOWNLOAD",
+        actor="forensight-investigator",
+        location=str(target_path),
+        notes=(
+            f"Evidence artifact '{evidence.file_name}' downloaded/decrypted. "
+            f"Plaintext SHA-256: {evidence.sha256_hash}."
+        ),
+        timestamp=now_utc,
+    )
+    db.add(custody_record)
+    db.commit()
+
+    return Response(
+        content=content_bytes,
+        media_type="application/octet-stream",
+        headers={
+            "Content-Disposition": f'attachment; filename="{evidence.file_name}"',
+            "X-ForenSight-SHA256": evidence.sha256_hash,
+        },
+    )
+

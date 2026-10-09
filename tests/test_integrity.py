@@ -91,12 +91,20 @@ def test_verify_modified_file_returns_tampered():
         assert body["is_intact"] is False
         assert body["status"] == "TAMPERED"
         assert body["stored_hash"] == stored_hash
-        assert body["current_hash"] is not None
-        assert body["current_hash"] != stored_hash
-        expected_tampered_hash = hashlib.sha256(tampered_bytes).hexdigest()
-        assert body["current_hash"] == expected_tampered_hash
+
+        if evd.get("is_encrypted"):
+            # For encrypted artifacts, tampering the ciphertext causes GCM tag mismatch.
+            # current_hash is None (no plaintext was recovered to hash against).
+            assert body["current_hash"] is None
+        else:
+            # For plaintext artifacts, SHA-256 of tampered bytes is computed and compared.
+            assert body["current_hash"] is not None
+            assert body["current_hash"] != stored_hash
+            expected_tampered_hash = hashlib.sha256(tampered_bytes).hexdigest()
+            assert body["current_hash"] == expected_tampered_hash
     finally:
         disk_path.write_bytes(original_bytes)
+
 
 
 def test_verify_missing_file_returns_file_missing():

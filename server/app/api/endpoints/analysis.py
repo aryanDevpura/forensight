@@ -67,6 +67,8 @@ def run_evidence_analysis(
     # Integrity pre-check: file existence + SHA-256 verification           #
     # Runs BEFORE the evidence-type check so that a missing or tampered    #
     # file is reported accurately regardless of the evidence type.         #
+    # When the artifact is encrypted at rest, decrypt first before hashing #
+    # because sha256_hash stores the PLAINTEXT digest.                    #
     # ------------------------------------------------------------------ #
     evidence_path = Path(evidence.file_path)
     if not evidence_path.exists():
@@ -75,14 +77,34 @@ def run_evidence_analysis(
             detail=f"Evidence file not found on disk: {evidence.file_path}",
         )
 
-    pre_hasher = hashlib.sha256()
-    with open(evidence_path, "rb") as fh:
-        while True:
-            chunk = fh.read(65536)
-            if not chunk:
-                break
-            pre_hasher.update(chunk)
-    pre_hash = pre_hasher.hexdigest()
+    raw_disk_bytes = evidence_path.read_bytes()
+
+    if evidence.is_encrypted:
+        from server.app.core.crypto import decrypt_payload as _decrypt_payload
+        from server.app.core.config import settings as _crypto_settings
+        if not _crypto_settings.FORENSIGHT_ENCRYPTION_KEY:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=(
+                    "Evidence artifact is encrypted at rest but FORENSIGHT_ENCRYPTION_KEY "
+                    "is not configured. Cannot perform analysis."
+                ),
+            )
+        try:
+            bytes_to_check, _ = _decrypt_payload(raw_disk_bytes, _crypto_settings.FORENSIGHT_ENCRYPTION_KEY)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"Pre-analysis integrity check FAILED for '{evidence.evidence_id}': "
+                    "AES-GCM authentication tag mismatch — the encrypted artifact "
+                    "has been corrupted or tampered with after acquisition."
+                ),
+            )
+    else:
+        bytes_to_check = raw_disk_bytes
+
+    pre_hash = hashlib.sha256(bytes_to_check).hexdigest()
     if pre_hash.lower() != evidence.sha256_hash.lower():
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -93,6 +115,7 @@ def run_evidence_analysis(
                 "Analysis aborted — the artifact appears to have been modified after acquisition."
             ),
         )
+
 
     if evidence.evidence_type not in ("PCAP", "PCAPNG"):
         raise HTTPException(

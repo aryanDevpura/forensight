@@ -104,8 +104,14 @@ def test_timeline_events_generated_on_analysis():
     # 5. Verify physical evidence integrity preserved
     disk_file = Path(file_path)
     assert disk_file.exists()
-    with open(disk_file, "rb") as f:
-        post_hash = hashlib.sha256(f.read()).hexdigest()
+    disk_bytes = disk_file.read_bytes()
+    if upload_resp.json().get("is_encrypted"):
+        from server.app.core.crypto import decrypt_payload
+        from server.app.core.config import settings
+        decrypted_bytes, _ = decrypt_payload(disk_bytes, settings.FORENSIGHT_ENCRYPTION_KEY)
+        post_hash = hashlib.sha256(decrypted_bytes).hexdigest()
+    else:
+        post_hash = hashlib.sha256(disk_bytes).hexdigest()
     assert post_hash == expected_hash, "Original file hash must remain unchanged"
 
 

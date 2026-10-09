@@ -50,8 +50,18 @@ def test_successful_evidence_upload_and_sha256():
     assert disk_path.exists(), f"Evidence file not found on disk at {disk_path}"
     with open(disk_path, "rb") as f:
         disk_content = f.read()
-    assert disk_content == known_content
-    assert hashlib.sha256(disk_content).hexdigest() == expected_sha256
+
+    # The server may store the artifact encrypted at rest (if FORENSIGHT_ENCRYPTION_KEY is set).
+    # sha256_hash in the DB always reflects the PLAINTEXT digest regardless.
+    if data.get("is_encrypted"):
+        # Disk holds ciphertext — SHA-256 of ciphertext will differ from plaintext hash
+        assert disk_content != known_content, "Encrypted artifact should not be stored as plaintext"
+        # The DB SHA-256 must still equal the plaintext hash
+        assert data["sha256_hash"] == expected_sha256
+    else:
+        # No encryption: disk content must equal original plaintext
+        assert disk_content == known_content
+        assert hashlib.sha256(disk_content).hexdigest() == expected_sha256
 
 
 def test_evidence_retrieval_endpoint():

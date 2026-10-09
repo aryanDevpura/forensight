@@ -12,12 +12,14 @@ Integrity guarantee:
 
 import hashlib
 import json
+import tempfile
 import uuid
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 from sqlalchemy.orm import Session
+
 
 from server.app.models.evidence import Evidence
 from server.app.models.finding import Finding
@@ -53,15 +55,33 @@ def analyze_pcap_evidence(
     # Pre-analysis integrity guard                                         #
     # Recompute SHA-256 from disk and compare against the stored           #
     # acquisition hash. Abort if the file has been modified or corrupted.  #
+    # When the artifact is encrypted at rest, decrypt first — sha256_hash  #
+    # always stores the PLAINTEXT digest.                                  #
     # ------------------------------------------------------------------ #
-    pre_hasher = hashlib.sha256()
-    with open(evidence_path, "rb") as fh:
-        while True:
-            chunk = fh.read(65536)
-            if not chunk:
-                break
-            pre_hasher.update(chunk)
-    pre_analysis_hash = pre_hasher.hexdigest()
+    raw_disk_bytes = evidence_path.read_bytes()
+
+    # Decrypt if the artifact was stored encrypted
+    _temp_pcap_path: Optional[Path] = None
+    if getattr(evidence, "is_encrypted", False):
+        from server.app.core.crypto import decrypt_payload as _decrypt_payload
+        from server.app.core.config import settings as _settings
+        if not _settings.FORENSIGHT_ENCRYPTION_KEY:
+            raise ValueError(
+                f"Evidence '{evidence.evidence_id}' is encrypted at rest but "
+                "FORENSIGHT_ENCRYPTION_KEY is not configured. Cannot decrypt for analysis."
+            )
+        try:
+            plaintext_bytes, _ = _decrypt_payload(raw_disk_bytes, _settings.FORENSIGHT_ENCRYPTION_KEY)
+        except ValueError as exc:
+            raise ValueError(
+                f"Pre-analysis decryption FAILED for '{evidence.evidence_id}': {exc}. "
+                "The encrypted artifact may have been tampered with."
+            ) from exc
+        analysis_bytes = plaintext_bytes
+    else:
+        analysis_bytes = raw_disk_bytes
+
+    pre_analysis_hash = hashlib.sha256(analysis_bytes).hexdigest()
 
     if pre_analysis_hash.lower() != evidence.sha256_hash.lower():
         raise ValueError(
@@ -73,8 +93,28 @@ def analyze_pcap_evidence(
 
     t_analysis_start = time.perf_counter()
 
-    # Pure read-only parse
-    parsed: PcapAnalysisResult = parse_pcap_file(evidence_path)
+    # For PCAP parsing, write decrypted bytes to a temp file so PyShark/tshark can read them.
+    # For unencrypted artifacts, pass the original path directly.
+    if getattr(evidence, "is_encrypted", False):
+        tmp_fd, tmp_name = tempfile.mkstemp(suffix=evidence_path.suffix)
+        _temp_pcap_path = Path(tmp_name)
+        try:
+            with open(tmp_fd, "wb") as tmp_f:
+                tmp_f.write(analysis_bytes)
+        except Exception:
+            _temp_pcap_path.unlink(missing_ok=True)
+            raise
+        parse_path = _temp_pcap_path
+    else:
+        parse_path = evidence_path
+
+    try:
+        # Pure read-only parse
+        parsed: PcapAnalysisResult = parse_pcap_file(parse_path)
+    finally:
+        # Always remove the temp decrypted file — never leave plaintext on disk
+        if _temp_pcap_path is not None and _temp_pcap_path.exists():
+            _temp_pcap_path.unlink(missing_ok=True)
 
     findings_to_create: List[Finding] = []
     now_utc = datetime.now(timezone.utc)

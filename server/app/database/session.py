@@ -42,6 +42,12 @@ def init_db() -> None:
                 with engine.begin() as conn:
                     conn.execute(text("ALTER TABLE benchmark_results ADD COLUMN evidence_id VARCHAR(64)"))
                     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_benchmark_results_evidence_id ON benchmark_results (evidence_id)"))
+        # Migration: add is_encrypted to evidence table (default 0 = not encrypted)
+        if "evidence" in table_names:
+            cols = [c["name"] for c in insp.get_columns("evidence")]
+            if "is_encrypted" not in cols:
+                with engine.begin() as conn:
+                    conn.execute(text("ALTER TABLE evidence ADD COLUMN is_encrypted INTEGER NOT NULL DEFAULT 0"))
     except Exception:
         pass
 

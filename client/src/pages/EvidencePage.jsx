@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Card } from '../components/common/Card';
 import { StatusBadge } from '../components/common/StatusBadge';
-import { fetchEvidence, uploadEvidence, verifyEvidence } from '../api/client';
-import { Upload, Inbox, CheckCircle2, AlertTriangle, FileCode, RefreshCw, X, ShieldCheck, ShieldAlert } from 'lucide-react';
+import { fetchEvidence, uploadEvidence, verifyEvidence, getEvidenceDownloadUrl } from '../api/client';
+import { Upload, Inbox, CheckCircle2, AlertTriangle, FileCode, RefreshCw, X, ShieldCheck, ShieldAlert, Lock, Download } from 'lucide-react';
 
 function formatBytes(bytes) {
   if (bytes === 0) return '0 B';
@@ -431,6 +431,15 @@ export function EvidencePage({ onEvidenceUploaded }) {
                         <span className="px-1.5 py-0.5 rounded-sm bg-[#eaede8] text-[#3e483c] font-mono text-[10px] font-semibold">
                           {item.evidence_type}
                         </span>
+                        {item.is_encrypted && (
+                          <span
+                            className="ml-1.5 inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-sm bg-[#e8f5e9] text-[#1b5e34] border border-[#c8e6c9] font-mono text-[10px] font-semibold"
+                            title="Encrypted at rest with AES-256-GCM"
+                          >
+                            <Lock className="w-2.5 h-2.5" />
+                            <span>AES-256</span>
+                          </span>
+                        )}
                       </td>
                       <td className="py-2.5 px-3 font-mono text-xs whitespace-nowrap">
                         <div className="text-[#111813] font-medium">{item.source_device || 'local-workstation'}</div>
@@ -480,28 +489,39 @@ export function EvidencePage({ onEvidenceUploaded }) {
                         )}
                       </td>
                       <td className="py-2.5 px-3 whitespace-nowrap text-right">
-                        <button
-                          onClick={() => handleVerify(item.evidence_id)}
-                          disabled={isVerifying}
-                          className={`inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-sm border transition-colors ${
-                            isVerifying
-                              ? 'bg-[#eaede8] text-[#536050] border-[#bdc7ba] cursor-wait'
-                              : 'bg-[#f4f1ea] hover:bg-[#eaede8] text-[#1b5e34] hover:text-[#144629] border-[#bdc7ba] hover:border-[#1b5e34]'
-                          }`}
-                          title={`Recalculate SHA-256 on disk and compare with stored acquisition hash for ${item.evidence_id}`}
-                        >
-                          {isVerifying ? (
-                            <>
-                              <RefreshCw className="w-3.5 h-3.5 animate-spin text-[#1b5e34]" />
-                              <span>Verifying...</span>
-                            </>
-                          ) : (
-                            <>
-                              <ShieldCheck className="w-3.5 h-3.5 text-[#1b5e34]" />
-                              <span>Verify Integrity</span>
-                            </>
-                          )}
-                        </button>
+                        <div className="flex items-center justify-end gap-1.5">
+                          <button
+                            onClick={() => handleVerify(item.evidence_id)}
+                            disabled={isVerifying}
+                            className={`inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-sm border transition-colors ${
+                              isVerifying
+                                ? 'bg-[#eaede8] text-[#536050] border-[#bdc7ba] cursor-wait'
+                                : 'bg-[#f4f1ea] hover:bg-[#eaede8] text-[#1b5e34] hover:text-[#144629] border-[#bdc7ba] hover:border-[#1b5e34]'
+                            }`}
+                            title={`Recalculate SHA-256 on disk and compare with stored acquisition hash for ${item.evidence_id}`}
+                          >
+                            {isVerifying ? (
+                              <>
+                                <RefreshCw className="w-3.5 h-3.5 animate-spin text-[#1b5e34]" />
+                                <span>Verifying...</span>
+                              </>
+                            ) : (
+                              <>
+                                <ShieldCheck className="w-3.5 h-3.5 text-[#1b5e34]" />
+                                <span>Verify Integrity</span>
+                              </>
+                            )}
+                          </button>
+                          <a
+                            href={getEvidenceDownloadUrl(item.evidence_id)}
+                            download={item.file_name}
+                            className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded-sm border border-[#bdc7ba] bg-[#f4f1ea] hover:bg-[#eaede8] text-[#3e483c] hover:text-[#111813] transition-colors"
+                            title={`Download evidence artifact (${item.is_encrypted ? 'decrypted on the fly with AES-256-GCM' : 'original'})`}
+                          >
+                            <Download className="w-3.5 h-3.5 text-[#536050]" />
+                            <span>Download</span>
+                          </a>
+                        </div>
                       </td>
                     </tr>
                   );

@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from sqlalchemy import Column, Integer, String, BigInteger, DateTime, Text
+from sqlalchemy import Boolean, Column, Integer, String, BigInteger, DateTime, Text
 from server.app.database.base import Base
 
 
@@ -21,5 +21,8 @@ class Evidence(Base):
     sha256_hash = Column(String(64), nullable=False)
     description = Column(Text, nullable=True)
     status = Column(String(32), default="ACQUIRED", nullable=False)  # Initial state: ACQUIRED
+    # True when the on-disk artifact has been AES-256-GCM encrypted at rest.
+    # sha256_hash always stores the PLAINTEXT hash regardless of this flag.
+    is_encrypted = Column(Boolean, default=False, nullable=False, server_default="0")
     collected_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)

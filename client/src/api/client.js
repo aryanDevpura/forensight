@@ -71,6 +71,10 @@ export async function verifyEvidence(evidenceId) {
   return await response.json();
 }
 
+export function getEvidenceDownloadUrl(evidenceId) {
+  return `${BASE_URL}/api/evidence/${encodeURIComponent(evidenceId)}/download`;
+}
+
 export async function triggerAnalysis(evidenceId) {
   const response = await fetch(`${BASE_URL}/api/analysis/${encodeURIComponent(evidenceId)}`, {
     method: 'POST',
