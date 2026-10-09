@@ -10,6 +10,7 @@ Integrity guarantee:
   The original evidence record and its SHA-256 acquisition hash are never modified.
 """
 
+import hashlib
 import json
 import uuid
 import time
@@ -47,6 +48,28 @@ def analyze_pcap_evidence(
     evidence_path = Path(evidence.file_path)
     if not evidence_path.exists():
         raise FileNotFoundError(f"Evidence file not found on disk: {evidence.file_path}")
+
+    # ------------------------------------------------------------------ #
+    # Pre-analysis integrity guard                                         #
+    # Recompute SHA-256 from disk and compare against the stored           #
+    # acquisition hash. Abort if the file has been modified or corrupted.  #
+    # ------------------------------------------------------------------ #
+    pre_hasher = hashlib.sha256()
+    with open(evidence_path, "rb") as fh:
+        while True:
+            chunk = fh.read(65536)
+            if not chunk:
+                break
+            pre_hasher.update(chunk)
+    pre_analysis_hash = pre_hasher.hexdigest()
+
+    if pre_analysis_hash.lower() != evidence.sha256_hash.lower():
+        raise ValueError(
+            f"Pre-analysis integrity check FAILED for '{evidence.evidence_id}'. "
+            f"Stored acquisition hash: {evidence.sha256_hash}. "
+            f"Current on-disk hash:    {pre_analysis_hash}. "
+            "Analysis aborted — the artifact appears to have been modified after acquisition."
+        )
 
     t_analysis_start = time.perf_counter()
 
@@ -234,7 +257,8 @@ def analyze_pcap_evidence(
             notes=(
                 f"Automated forensic PCAP inspection completed. "
                 f"Generated {len(findings_to_create)} findings and {len(events_to_create)} timeline events. "
-                f"Integrity verified (SHA-256 untouched: {evidence.sha256_hash})."
+                f"Pre-analysis integrity verified: stored SHA-256 ({evidence.sha256_hash}) "
+                f"matched on-disk hash ({pre_analysis_hash})."
             ),
             timestamp=now_utc,
         )

@@ -15,7 +15,7 @@ from server.app.core.benchmark_recorder import record_benchmark
 from server.app.database.session import get_db
 from server.app.models.evidence import Evidence
 from server.app.models.custody import ChainOfCustody
-from server.app.api.endpoints.schemas import EvidenceRead
+from server.app.api.endpoints.schemas import EvidenceRead, EvidenceIntegrityResult
 
 
 router = APIRouter(prefix="/evidence", tags=["Evidence"])
@@ -382,7 +382,146 @@ async def upload_evidence_authenticated(
 
 
 # ---------------------------------------------------------------------------
-# Route 3: List all evidence (no auth required — read-only)
+# Route 4: Post-acquisition integrity verification
+#   Recalculates SHA-256 from disk and compares against stored acquisition hash.
+#   Never modifies the stored hash. Always writes a custody event.
+# ---------------------------------------------------------------------------
+
+@router.post(
+    "/{evidence_id}/verify",
+    response_model=EvidenceIntegrityResult,
+    summary="Verify evidence artifact integrity",
+    description=(
+        "Recalculates the SHA-256 hash of the on-disk evidence file and compares it "
+        "against the original acquisition hash stored in the database. "
+        "Returns an intact/tampered/missing status and records every attempt in "
+        "the chain-of-custody ledger. The original acquisition hash is never modified."
+    ),
+)
+def verify_evidence_integrity(
+    evidence_id: str,
+    db: Session = Depends(get_db),
+) -> EvidenceIntegrityResult:
+    """
+    Post-acquisition integrity check for a stored evidence artifact.
+
+    Three possible outcomes:
+      - INTACT      : on-disk hash matches the stored acquisition hash.
+      - TAMPERED    : on-disk hash does NOT match the stored acquisition hash.
+      - FILE_MISSING: the evidence file no longer exists at the stored path.
+
+    A chain-of-custody record is written for every verification attempt,
+    including the result, so the audit trail captures both clean checks and
+    detected integrity failures.
+    """
+    now_utc = datetime.now(timezone.utc)
+
+    evidence = db.query(Evidence).filter(Evidence.evidence_id == evidence_id).first()
+    if evidence is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Evidence artifact '{evidence_id}' not found in the database.",
+        )
+
+    target_path = Path(evidence.file_path)
+
+    # ------------------------------------------------------------------ #
+    # Case 1: File is missing from disk                                    #
+    # ------------------------------------------------------------------ #
+    if not target_path.exists():
+        custody_record = ChainOfCustody(
+            evidence_id=evidence.evidence_id,
+            action="INTEGRITY_CHECK",
+            actor="forensight-integrity-verifier",
+            location=str(target_path),
+            notes=(
+                f"Integrity check FAILED — FILE MISSING. "
+                f"Expected at: {target_path}. "
+                f"Stored acquisition hash: {evidence.sha256_hash}."
+            ),
+            timestamp=now_utc,
+        )
+        db.add(custody_record)
+        db.commit()
+        return EvidenceIntegrityResult(
+            evidence_id=evidence_id,
+            is_intact=False,
+            stored_hash=evidence.sha256_hash,
+            current_hash=None,
+            status="FILE_MISSING",
+            message=(
+                f"Evidence file is missing from disk at '{target_path}'. "
+                "The original acquisition hash has been preserved in the database."
+            ),
+        )
+
+    # ------------------------------------------------------------------ #
+    # Case 2: File exists — recalculate hash in 64 KB chunks               #
+    # ------------------------------------------------------------------ #
+    hasher = hashlib.sha256()
+    try:
+        with open(target_path, "rb") as fh:
+            while True:
+                chunk = fh.read(65536)
+                if not chunk:
+                    break
+                hasher.update(chunk)
+    except OSError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Could not read evidence file for integrity check: {exc}",
+        )
+
+    current_hash = hasher.hexdigest()
+    is_intact = current_hash.lower() == evidence.sha256_hash.lower()
+
+    if is_intact:
+        integrity_status = "INTACT"
+        custody_notes = (
+            f"Integrity check PASSED — SHA-256 verified. "
+            f"Stored hash: {evidence.sha256_hash}. "
+            f"Computed hash: {current_hash}."
+        )
+        message = "Evidence artifact is intact. On-disk SHA-256 matches the original acquisition hash."
+    else:
+        integrity_status = "TAMPERED"
+        custody_notes = (
+            f"Integrity check FAILED — SHA-256 MISMATCH DETECTED. "
+            f"Stored acquisition hash: {evidence.sha256_hash}. "
+            f"Current on-disk hash: {current_hash}. "
+            f"The artifact may have been modified, corrupted, or replaced after acquisition."
+        )
+        message = (
+            f"INTEGRITY VIOLATION: on-disk SHA-256 ({current_hash[:16]}…) does NOT match "
+            f"stored acquisition hash ({evidence.sha256_hash[:16]}…). "
+            "The artifact may have been tampered with after acquisition."
+        )
+
+    # Record the verification attempt in the chain-of-custody ledger.
+    # The original acquisition hash in the Evidence row is NEVER updated here.
+    custody_record = ChainOfCustody(
+        evidence_id=evidence.evidence_id,
+        action="INTEGRITY_CHECK",
+        actor="forensight-integrity-verifier",
+        location=str(target_path),
+        notes=custody_notes,
+        timestamp=now_utc,
+    )
+    db.add(custody_record)
+    db.commit()
+
+    return EvidenceIntegrityResult(
+        evidence_id=evidence_id,
+        is_intact=is_intact,
+        stored_hash=evidence.sha256_hash,
+        current_hash=current_hash,
+        status=integrity_status,
+        message=message,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Route 5: List all evidence (no auth required — read-only)
 # ---------------------------------------------------------------------------
 
 @router.get("", response_model=List[EvidenceRead])

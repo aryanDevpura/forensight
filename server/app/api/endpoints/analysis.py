@@ -5,6 +5,8 @@ Provides endpoints for executing forensic analysis on acquired evidence
 artifacts and querying detected forensic findings.
 """
 
+import hashlib
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
@@ -61,6 +63,37 @@ def run_evidence_analysis(
             detail=f"Evidence artifact '{evidence_id}' not found.",
         )
 
+    # ------------------------------------------------------------------ #
+    # Integrity pre-check: file existence + SHA-256 verification           #
+    # Runs BEFORE the evidence-type check so that a missing or tampered    #
+    # file is reported accurately regardless of the evidence type.         #
+    # ------------------------------------------------------------------ #
+    evidence_path = Path(evidence.file_path)
+    if not evidence_path.exists():
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Evidence file not found on disk: {evidence.file_path}",
+        )
+
+    pre_hasher = hashlib.sha256()
+    with open(evidence_path, "rb") as fh:
+        while True:
+            chunk = fh.read(65536)
+            if not chunk:
+                break
+            pre_hasher.update(chunk)
+    pre_hash = pre_hasher.hexdigest()
+    if pre_hash.lower() != evidence.sha256_hash.lower():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Pre-analysis integrity check FAILED for '{evidence.evidence_id}'. "
+                f"Stored acquisition hash: {evidence.sha256_hash}. "
+                f"Current on-disk hash: {pre_hash}. "
+                "Analysis aborted — the artifact appears to have been modified after acquisition."
+            ),
+        )
+
     if evidence.evidence_type not in ("PCAP", "PCAPNG"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -73,6 +106,13 @@ def run_evidence_analysis(
     except FileNotFoundError as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(exc),
+        )
+    except ValueError as exc:
+        # Raised by the pre-analysis integrity guard when the on-disk hash
+        # does not match the stored acquisition hash.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
             detail=str(exc),
         )
     except Exception as exc:

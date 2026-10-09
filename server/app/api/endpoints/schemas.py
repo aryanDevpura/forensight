@@ -57,6 +57,15 @@ class EvidenceRead(EvidenceBase):
     model_config = ConfigDict(from_attributes=True)
 
 
+class EvidenceIntegrityResult(BaseModel):
+    evidence_id: str
+    is_intact: bool
+    stored_hash: str
+    current_hash: Optional[str] = None  # None when file is missing
+    status: str  # "INTACT", "TAMPERED", "FILE_MISSING"
+    message: str
+
+
 # Chain of Custody Schema Placeholders
 class ChainOfCustodyBase(BaseModel):
     evidence_id: str
