@@ -110,11 +110,16 @@ def _parse_with_pyshark(filepath: Path) -> PcapAnalysisResult:
     result = PcapAnalysisResult(is_valid_pcap=False)
     conversations_map: Dict[Tuple[str, str, str], int] = {}
 
+    cap = None
     try:
+        # Use default PDML/XML output (no use_json / use_ek).
+        # use_json=True is DEPRECATED in PyShark 0.6 — TsharkJsonParser requires
+        # a 'frame.protocols' key that is absent in many tshark JSON outputs,
+        # causing a KeyError on every packet that is silently swallowed by the
+        # per-packet exception handler, resulting in 0 packets parsed.
         cap = pyshark.FileCapture(
             str(filepath),
             keep_packets=False,  # stream packets; do not hold all in RAM
-            use_json=True,        # faster than XML for large captures
         )
 
         first_ts: Optional[float] = None
@@ -246,9 +251,7 @@ def _parse_with_pyshark(filepath: Path) -> PcapAnalysisResult:
                 result.parser_warnings.append(f"Skipped malformed packet: {pkt_exc}")
                 continue
 
-        cap.close()
-
-        # ---- mark valid if tshark processed it without error ----
+        # ---- mark valid if tshark processed the file without an outer error ----
         result.is_valid_pcap = True
 
         # ---- timestamps / duration ----
@@ -270,12 +273,13 @@ def _parse_with_pyshark(filepath: Path) -> PcapAnalysisResult:
                 "packet_count": count,
             })
 
-    except Exception as exc:
-        result.is_valid_pcap = False
-        result.parser_warnings.append(
-            f"PyShark/tshark failed to parse file: {exc}. "
-            "Ensure tshark is installed and the file is a valid PCAP/PCAPNG."
-        )
+    finally:
+        # Always close the capture to terminate the tshark subprocess.
+        if cap is not None:
+            try:
+                cap.close()
+            except Exception:
+                pass
 
     return result
 
