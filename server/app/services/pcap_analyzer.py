@@ -148,12 +148,35 @@ def analyze_pcap_evidence(
                 )
                 findings_to_create.append(scan_finding)
 
-        # 3. Unencrypted Protocol Inspection (e.g. Telnet:23, HTTP:80)
+        # 3. Unencrypted Protocol Inspection (FTP, Telnet, HTTP, POP3).
+        #
+        # Detection strategy (eliminates false positives from port numbers alone):
+        #   - When tshark/PyShark is active, pkt.app_proto holds the dissector-
+        #     confirmed application protocol name (e.g. "HTTP", "FTP", "TLS").
+        #     A match is only recorded when the dissector explicitly names a
+        #     cleartext protocol — port number is NOT sufficient.
+        #   - When the pure-Python fallback is active, pkt.app_proto is None
+        #     (no application-layer dissector available).  In that case the
+        #     legacy port-based heuristic is used as a best-effort signal.
+        #
+        cleartext_proto_names = {"FTP", "TELNET", "HTTP", "POP", "POP3"}
         unencrypted_ports = {21: "FTP", 23: "Telnet", 80: "HTTP", 110: "POP3"}
         unencrypted_hits: Dict[str, List[int]] = {}
+
         for pkt in parsed.raw_packets:
-            if pkt.dst_port in unencrypted_ports:
-                proto_name = unencrypted_ports[pkt.dst_port]
+            if pkt.dst_port not in unencrypted_ports:
+                continue  # Not a cleartext-protocol port at all
+
+            proto_name = unencrypted_ports[pkt.dst_port]
+
+            if pkt.app_proto is not None:
+                # Dissector data is available — require explicit confirmation.
+                # tshark may report "HTTP", "FTP", "TELNET", "POP", "POP3" etc.
+                if pkt.app_proto.upper() in cleartext_proto_names:
+                    unencrypted_hits.setdefault(proto_name, []).append(pkt.dst_port)
+                # else: dissector named something else (e.g. "TLS") — skip.
+            else:
+                # Pure-Python fallback: no dissector available, use port heuristic.
                 unencrypted_hits.setdefault(proto_name, []).append(pkt.dst_port)
 
         if unencrypted_hits:

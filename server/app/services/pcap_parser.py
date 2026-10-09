@@ -52,6 +52,8 @@ class PacketMetadata:
     src_port: Optional[int] = None
     dst_port: Optional[int] = None
     tcp_flags: Optional[int] = None
+    app_proto: Optional[str] = None        # Dissector-confirmed application protocol (e.g. HTTP, FTP).
+                                           # None when no tshark dissector confirmed the protocol.
 
 
 @dataclass
@@ -202,19 +204,26 @@ def _parse_with_pyshark(filepath: Path) -> PcapAnalysisResult:
                 elif "ICMPV6" in layers:
                     transport_proto = "ICMPv6"
 
-                # Application-layer enrichment: override proto label with
-                # the highest recognised dissector when meaningful
+                # Application-layer enrichment: collect tshark-confirmed
+                # dissector names for this packet (e.g. ["HTTP"], ["FTP"],
+                # ["TLS"]).
+                _ignored_layers = {
+                    "ETH", "IP", "IPV6", "TCP", "UDP", "ARP",
+                    "ICMP", "ICMPV6", "FRAME", "ETH_PADDING",
+                    "WLAN", "RADIOTAP", "DATA", "DATA-TEXT-LINES",
+                }
                 app_proto_candidates = [
-                    l for l in layers
-                    if l not in {
-                        "ETH", "IP", "IPV6", "TCP", "UDP", "ARP",
-                        "ICMP", "ICMPV6", "FRAME", "ETH_PADDING",
-                        "WLAN", "RADIOTAP", "DATA", "DATA-TEXT-LINES",
-                    }
+                    l for l in layers if l not in _ignored_layers
                 ]
-                if app_proto_candidates:
-                    # Use the outermost recognised application layer
-                    transport_proto = transport_proto or app_proto_candidates[0]
+                # The outermost candidate is the dissector-confirmed app proto.
+                confirmed_app_proto: Optional[str] = (
+                    app_proto_candidates[0] if app_proto_candidates else None
+                )
+                if confirmed_app_proto:
+                    # Use the outermost recognised application layer as the
+                    # protocol key for statistics — but keep transport_proto
+                    # as TCP/UDP so port-level fields remain meaningful.
+                    transport_proto = transport_proto or confirmed_app_proto
 
                 proto_key = transport_proto or network_proto or "OTHER"
 
@@ -245,6 +254,7 @@ def _parse_with_pyshark(filepath: Path) -> PcapAnalysisResult:
                     src_port=src_port,
                     dst_port=dst_port,
                     tcp_flags=tcp_flags_int,
+                    app_proto=confirmed_app_proto,
                 ))
 
             except Exception as pkt_exc:

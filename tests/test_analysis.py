@@ -249,3 +249,136 @@ def test_list_all_findings_endpoint():
     resp = client.get("/api/analysis/findings")
     assert resp.status_code == 200
     assert isinstance(resp.json(), list)
+
+
+# ---------------------------------------------------------------------------
+# CLEAR_TEXT_TRAFFIC detector tests
+# ---------------------------------------------------------------------------
+
+def _make_pcap_with_app_proto(
+    dst_port: int,
+    app_proto: "str | None",
+    src_port: int = 50000,
+) -> bytes:
+    """
+    Build a single-packet PCAP where the PacketMetadata already has the
+    given dst_port/app_proto combination.  We do this by uploading via
+    the real evidence API (which uses the pure-Python parser), then
+    monkey-patching parse_pcap_file in a separate test that needs it.
+
+    For tests that don't need to test dissector-confirmed detection in
+    isolation (i.e. the pure-Python path), we just build a real binary
+    PCAP with the desired port; app_proto will be None because the pure-
+    Python parser cannot perform application-layer dissection.
+    """
+    return build_binary_pcap(packet_count=1, has_scan=False, has_cleartext=False)
+
+
+def test_cleartext_port_heuristic_fires_without_dissector():
+    """
+    Pure-Python fallback (app_proto=None): a packet to port 80 must trigger
+    the CLEAR_TEXT_TRAFFIC finding via the port heuristic.
+    """
+    # build_binary_pcap with has_cleartext=True writes dst_port=80 packets
+    pcap = build_binary_pcap(packet_count=2, has_cleartext=True)
+
+    upload_resp = client.post(
+        "/api/evidence",
+        files={"file": ("cleartext_heuristic.pcap", io.BytesIO(pcap), "application/octet-stream")},
+    )
+    assert upload_resp.status_code == 201
+    evidence_id = upload_resp.json()["evidence_id"]
+
+    resp = client.post(f"/api/analysis/{evidence_id}")
+    assert resp.status_code == 200
+    cleartext_findings = [f for f in resp.json()["findings"] if f["category"] == "CLEAR_TEXT_TRAFFIC"]
+    # Pure-Python path: port heuristic still fires
+    assert len(cleartext_findings) >= 1, (
+        "Expected CLEAR_TEXT_TRAFFIC finding via port heuristic but got none"
+    )
+
+
+def test_cleartext_dissector_confirmed_http(monkeypatch):
+    """
+    When the PyShark dissector explicitly confirms HTTP on port 80,
+    the CLEAR_TEXT_TRAFFIC finding must be emitted.
+    """
+    import server.app.services.pcap_analyzer as _analyzer_mod
+    from server.app.services.pcap_parser import PcapAnalysisResult, PacketMetadata
+
+    # Upload a dummy PCAP so we have a valid evidence record
+    pcap = build_binary_pcap(packet_count=1, has_cleartext=True)
+    upload_resp = client.post(
+        "/api/evidence",
+        files={"file": ("http_confirmed.pcap", io.BytesIO(pcap), "application/octet-stream")},
+    )
+    assert upload_resp.status_code == 201
+    evidence_id = upload_resp.json()["evidence_id"]
+
+    # Build a synthetic result with app_proto="HTTP" to simulate PyShark
+    synthetic = PcapAnalysisResult(is_valid_pcap=True, packet_count=1)
+    synthetic.raw_packets.append(PacketMetadata(
+        timestamp=1_710_000_000.0,
+        length=54,
+        captured_length=54,
+        network_proto="IPv4",
+        transport_proto="TCP",
+        src_ip="192.168.1.10",
+        dst_ip="10.0.0.1",
+        src_port=50000,
+        dst_port=80,
+        app_proto="HTTP",  # tshark confirmed
+    ))
+
+    # Patch the name as it is bound in pcap_analyzer's namespace
+    monkeypatch.setattr(_analyzer_mod, "parse_pcap_file", lambda path: synthetic)
+
+    resp = client.post(f"/api/analysis/{evidence_id}")
+    assert resp.status_code == 200
+    cleartext_findings = [f for f in resp.json()["findings"] if f["category"] == "CLEAR_TEXT_TRAFFIC"]
+    assert len(cleartext_findings) >= 1, (
+        "Expected CLEAR_TEXT_TRAFFIC finding when dissector confirmed HTTP"
+    )
+
+
+def test_cleartext_dissector_denies_tls_on_port_80(monkeypatch):
+    """
+    When tshark dissects a packet on port 80 but reports 'TLS' (not HTTP),
+    the CLEAR_TEXT_TRAFFIC detector must NOT fire (no false positive).
+    """
+    import server.app.services.pcap_analyzer as _analyzer_mod
+    from server.app.services.pcap_parser import PcapAnalysisResult, PacketMetadata
+
+    pcap = build_binary_pcap(packet_count=1)
+    upload_resp = client.post(
+        "/api/evidence",
+        files={"file": ("tls_on_80.pcap", io.BytesIO(pcap), "application/octet-stream")},
+    )
+    assert upload_resp.status_code == 201
+    evidence_id = upload_resp.json()["evidence_id"]
+
+    # Simulate tshark reporting TLS (HTTPS over non-443) on port 80
+    synthetic = PcapAnalysisResult(is_valid_pcap=True, packet_count=1)
+    for dst_port in (21, 23, 80, 110):
+        synthetic.raw_packets.append(PacketMetadata(
+            timestamp=1_710_000_000.0,
+            length=54,
+            captured_length=54,
+            network_proto="IPv4",
+            transport_proto="TCP",
+            src_ip="192.168.1.10",
+            dst_ip="10.0.0.1",
+            src_port=50000,
+            dst_port=dst_port,
+            app_proto="TLS",  # tshark reports TLS, not a cleartext protocol
+        ))
+
+    monkeypatch.setattr(_analyzer_mod, "parse_pcap_file", lambda path: synthetic)
+
+    resp = client.post(f"/api/analysis/{evidence_id}")
+    assert resp.status_code == 200
+    cleartext_findings = [f for f in resp.json()["findings"] if f["category"] == "CLEAR_TEXT_TRAFFIC"]
+    assert len(cleartext_findings) == 0, (
+        f"Expected NO CLEAR_TEXT_TRAFFIC finding when dissector reported TLS, "
+        f"but got: {cleartext_findings}"
+    )
