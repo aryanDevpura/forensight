@@ -46,6 +46,9 @@ from server.app.api.endpoints.schemas import (
     HashCompareResult,
     EvidenceSignatureVerifyResponse,
     InteractiveSignatureDemoResponse,
+    AesExperimentParams,
+    AesBlockTrial,
+    AesConfusionDiffusionResponse,
 )
 
 
@@ -1174,6 +1177,193 @@ async def hash_compare_files(
         avalanche_percentage=avalanche,
         educational_note=educational_note,
     )
+
+
+# ---------------------------------------------------------------------------
+# Cryptography Lab - AES Confusion & Diffusion Experiments
+# ---------------------------------------------------------------------------
+
+def _flip_single_bit(data: bytes, bit_index: int) -> bytes:
+    """Flips exactly 1 bit in a byte array at bit_index (0..len(data)*8 - 1)."""
+    if not (0 <= bit_index < len(data) * 8):
+        raise ValueError(f"Bit index {bit_index} out of range for {len(data)} bytes.")
+    byte_idx = bit_index // 8
+    bit_offset = 7 - (bit_index % 8)
+    arr = bytearray(data)
+    arr[byte_idx] ^= (1 << bit_offset)
+    return bytes(arr)
+
+
+def _compare_128_bit_blocks(ct_a: bytes, ct_b: bytes) -> Tuple[int, float, str]:
+    """Returns (changed_bits, changed_percentage, binary_mask_128_chars)."""
+    int_a = int.from_bytes(ct_a, "big")
+    int_b = int.from_bytes(ct_b, "big")
+    xor_diff = int_a ^ int_b
+    diff_bin_str = bin(xor_diff)[2:].zfill(128)
+    changed_bits = diff_bin_str.count("1")
+    changed_pct = round((changed_bits / 128.0) * 100.0, 2)
+    return changed_bits, changed_pct, diff_bin_str
+
+
+@router.post(
+    "/crypto-lab/aes-confusion-diffusion",
+    response_model=AesConfusionDiffusionResponse,
+    summary="AES block cipher confusion and diffusion avalanche experiments",
+    description=(
+        "Executes deterministic single-block AES-128 experiments demonstrating Claude Shannon's confusion "
+        "(key sensitivity) and diffusion (plaintext sensitivity) properties by flipping exactly 1 bit."
+    ),
+)
+def run_aes_confusion_diffusion_demo(
+    params: Optional[AesExperimentParams] = None,
+) -> AesConfusionDiffusionResponse:
+    default_pt = b"ForenSight-Block"  # 16 bytes
+    default_key = b"ForenSight-Key16"  # 16 bytes
+
+    if params and params.plaintext_hex:
+        try:
+            pt = bytes.fromhex(params.plaintext_hex)
+            if len(pt) != 16:
+                raise ValueError()
+        except Exception:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="plaintext_hex must be exactly 32 hexadecimal characters (16 bytes).",
+            )
+    else:
+        pt = default_pt
+
+    if params and params.key_hex:
+        try:
+            key = bytes.fromhex(params.key_hex)
+            if len(key) != 16:
+                raise ValueError()
+        except Exception:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="key_hex must be exactly 32 hexadecimal characters (16 bytes).",
+            )
+    else:
+        key = default_key
+
+    k_bit = params.key_bit_to_flip if params else 0
+    p_bit = params.plaintext_bit_to_flip if params else 0
+
+    if not (0 <= k_bit < 128):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="key_bit_to_flip must be between 0 and 127.",
+        )
+    if not (0 <= p_bit < 128):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="plaintext_bit_to_flip must be between 0 and 127.",
+        )
+
+    # 1. Confusion (Fixed Plaintext, Flip 1 Key Bit)
+    key_b = _flip_single_bit(key, k_bit)
+    cipher_k1 = AES.new(key, AES.MODE_ECB)
+    cipher_k2 = AES.new(key_b, AES.MODE_ECB)
+    ct_k1 = cipher_k1.encrypt(pt)
+    ct_k2 = cipher_k2.encrypt(pt)
+
+    changed_k_bits, pct_k, mask_k = _compare_128_bit_blocks(ct_k1, ct_k2)
+    k_byte_idx = k_bit // 8
+    k_desc = f"Inverted bit {k_bit} (byte {k_byte_idx}: 0x{key[k_byte_idx]:02x} -> 0x{key_b[k_byte_idx]:02x})"
+
+    pt_text = None
+    try:
+        pt_text = pt.decode("ascii")
+    except Exception:
+        pass
+
+    key_text = None
+    try:
+        key_text = key.decode("ascii")
+    except Exception:
+        pass
+
+    confusion_trial = AesBlockTrial(
+        experiment_name="Confusion (Key Sensitivity)",
+        fixed_parameter_label="Fixed Plaintext Block (16 bytes)",
+        fixed_parameter_hex=pt.hex(),
+        fixed_parameter_text=pt_text,
+        input_a_label="Cipher Key A",
+        input_a_hex=key.hex(),
+        input_b_label=f"Cipher Key B (Bit {k_bit} flipped)",
+        input_b_hex=key_b.hex(),
+        flipped_bit_index=k_bit,
+        flipped_bit_description=k_desc,
+        ciphertext_a_hex=ct_k1.hex(),
+        ciphertext_b_hex=ct_k2.hex(),
+        changed_bits=changed_k_bits,
+        total_bits=128,
+        changed_percentage=pct_k,
+        bit_differences_binary=mask_k,
+        explanation=(
+            "Claude Shannon's property of confusion ensures that each bit of the ciphertext depends on several parts "
+            "of the key, obscuring the mathematical relationship between them. In AES, altering even a single bit in "
+            "the cipher key radically alters round-key scheduling and subkey additions across all 10 transformation "
+            "rounds, flipping approximately half (~50%) of the resulting 128 ciphertext bits."
+        ),
+    )
+
+    # 2. Diffusion (Fixed Key, Flip 1 Plaintext Bit)
+    pt_b = _flip_single_bit(pt, p_bit)
+    cipher_p1 = AES.new(key, AES.MODE_ECB)
+    cipher_p2 = AES.new(key, AES.MODE_ECB)
+    ct_p1 = cipher_p1.encrypt(pt)
+    ct_p2 = cipher_p2.encrypt(pt_b)
+
+    changed_p_bits, pct_p, mask_p = _compare_128_bit_blocks(ct_p1, ct_p2)
+    p_byte_idx = p_bit // 8
+    p_desc = f"Inverted bit {p_bit} (byte {p_byte_idx}: 0x{pt[p_byte_idx]:02x} -> 0x{pt_b[p_byte_idx]:02x})"
+
+    diffusion_trial = AesBlockTrial(
+        experiment_name="Diffusion (Plaintext Sensitivity)",
+        fixed_parameter_label="Fixed Cipher Key (16 bytes / 128-bit)",
+        fixed_parameter_hex=key.hex(),
+        fixed_parameter_text=key_text,
+        input_a_label="Plaintext Block A",
+        input_a_hex=pt.hex(),
+        input_b_label=f"Plaintext Block B (Bit {p_bit} flipped)",
+        input_b_hex=pt_b.hex(),
+        flipped_bit_index=p_bit,
+        flipped_bit_description=p_desc,
+        ciphertext_a_hex=ct_p1.hex(),
+        ciphertext_b_hex=ct_p2.hex(),
+        changed_bits=changed_p_bits,
+        total_bits=128,
+        changed_percentage=pct_p,
+        bit_differences_binary=mask_p,
+        explanation=(
+            "Claude Shannon's property of diffusion ensures that statistical structure or redundancy in the plaintext "
+            "is thoroughly dissipated across the ciphertext. In AES, each round applies non-linear byte substitution "
+            "(SubBytes), cyclical row rotations (ShiftRows), and matrix multiplications in GF(2^8) (MixColumns). "
+            "A 1-bit input deviation rapidly spreads across the entire 128-bit state, rendering the output uncorrelated."
+        ),
+    )
+
+    return AesConfusionDiffusionResponse(
+        cipher_algorithm="AES-128 (Single Block 128-bit Permutation)",
+        block_size_bits=128,
+        confusion_experiment=confusion_trial,
+        diffusion_experiment=diffusion_trial,
+        educational_summary=(
+            "Confusion hides the relationship between the key and ciphertext, while diffusion distributes plaintext "
+            "structure across the entire ciphertext. Together, they create the avalanche effect in modern symmetric ciphers."
+        ),
+        security_disclaimer=(
+            "Notice: Approximately 50% changed output bits is the expected statistical average of the avalanche effect, "
+            "not a rigid guarantee for every individual round or bit offset. These experiments illustrate cryptographic "
+            "confusion and diffusion properties, but empirical observation does not constitute formal mathematical proof "
+            "of AES security or collision resistance."
+        ),
+    )
+
+
+
+
 
 
 @router.post(

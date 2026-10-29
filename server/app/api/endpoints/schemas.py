@@ -230,6 +230,43 @@ class InteractiveSignatureDemoResponse(BaseModel):
     educational_note: str
 
 
+# AES Block Cipher Confusion & Diffusion Schemas
+class AesExperimentParams(BaseModel):
+    plaintext_hex: Optional[str] = None
+    key_hex: Optional[str] = None
+    key_bit_to_flip: int = 0
+    plaintext_bit_to_flip: int = 0
+
+
+class AesBlockTrial(BaseModel):
+    experiment_name: str
+    fixed_parameter_label: str
+    fixed_parameter_hex: str
+    fixed_parameter_text: Optional[str] = None
+    input_a_label: str
+    input_a_hex: str
+    input_b_label: str
+    input_b_hex: str
+    flipped_bit_index: int
+    flipped_bit_description: str
+    ciphertext_a_hex: str
+    ciphertext_b_hex: str
+    changed_bits: int
+    total_bits: int
+    changed_percentage: float
+    bit_differences_binary: str
+    explanation: str
+
+
+class AesConfusionDiffusionResponse(BaseModel):
+    cipher_algorithm: str
+    block_size_bits: int
+    confusion_experiment: AesBlockTrial
+    diffusion_experiment: AesBlockTrial
+    educational_summary: str
+    security_disclaimer: str
+
+
 # Finding Schema Placeholders
 class FindingBase(BaseModel):
     finding_id: str

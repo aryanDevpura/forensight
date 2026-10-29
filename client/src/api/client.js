@@ -201,6 +201,23 @@ export async function signInteractiveDemo(file) {
   return await response.json();
 }
 
+export async function runAesConfusionDiffusion(params = {}) {
+  const response = await fetch(`${BASE_URL}/api/evidence/crypto-lab/aes-confusion-diffusion`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+    },
+    body: JSON.stringify(params),
+  });
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => null);
+    const message = errorData?.detail || `AES experiment failed: HTTP ${response.status}`;
+    throw new Error(message);
+  }
+  return await response.json();
+}
+
 export async function triggerAnalysis(evidenceId) {
   const response = await fetch(`${BASE_URL}/api/analysis/${encodeURIComponent(evidenceId)}`, {
     method: 'POST',

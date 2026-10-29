@@ -10,6 +10,7 @@ import {
   hashCompareFiles,
   verifyEvidenceSignature,
   signInteractiveDemo,
+  runAesConfusionDiffusion,
 } from '../api/client';
 import {
   Shield,
@@ -87,6 +88,11 @@ export function CryptoLabPage() {
   const [sigDemoFile, setSigDemoFile] = useState(null);
   const [sigDemoResult, setSigDemoResult] = useState(null);
   const [isSigningDemo, setIsSigningDemo] = useState(false);
+
+  // AES Confusion & Diffusion state
+  const [aesResult, setAesResult] = useState(null);
+  const [isAesLoading, setIsAesLoading] = useState(false);
+  const [aesExpanded, setAesExpanded] = useState({ confusion: true, diffusion: true });
 
   const handleCopy = (text) => {
     if (navigator?.clipboard?.writeText) {
@@ -218,6 +224,21 @@ export function CryptoLabPage() {
       setCompareResult(null);
     } finally {
       setIsComparing(false);
+    }
+  };
+
+  // AES Confusion & Diffusion experiment
+  const handleRunAesExperiment = async () => {
+    setIsAesLoading(true);
+    setError(null);
+    try {
+      const result = await runAesConfusionDiffusion({});
+      setAesResult(result);
+    } catch (err) {
+      setError(err.message || 'AES experiment failed');
+      setAesResult(null);
+    } finally {
+      setIsAesLoading(false);
     }
   };
 
@@ -1251,6 +1272,257 @@ export function CryptoLabPage() {
                   </div>
                 </div>
               )}
+
+              {/* ================================================================= */}
+              {/* AES Confusion & Diffusion Experiments                              */}
+              {/* ================================================================= */}
+              <div className="pt-4 border-t border-[#d7ded4] space-y-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h3 className="text-sm font-bold text-[#111813]">AES Block Cipher — Confusion & Diffusion</h3>
+                    <p className="text-[11px] text-[#536050] mt-0.5">
+                      Single-block AES-128 ECB experiments demonstrating Shannon's confusion (key sensitivity) and diffusion (plaintext sensitivity)
+                    </p>
+                  </div>
+                  <button
+                    onClick={handleRunAesExperiment}
+                    disabled={isAesLoading}
+                    className="h-9 px-5 bg-[#1a5935] hover:bg-[#144629] text-white rounded-sm text-xs font-semibold tracking-wide transition-colors disabled:opacity-50 flex items-center gap-2 shrink-0"
+                  >
+                    {isAesLoading ? (
+                      <>
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                        <span>Running Experiment...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Zap className="w-3.5 h-3.5" />
+                        <span>Run AES Demo</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+
+                {aesResult && (
+                  <div className="space-y-4">
+                    {/* Confusion Experiment */}
+                    <div className="border border-[#d7ded4] rounded-sm overflow-hidden">
+                      <button
+                        onClick={() => setAesExpanded((prev) => ({ ...prev, confusion: !prev.confusion }))}
+                        className="w-full flex items-center justify-between p-3 bg-[#faf8f3] hover:bg-[#eaede8] transition-colors text-left"
+                      >
+                        <div className="flex items-center gap-2">
+                          <KeyRound className="w-4 h-4 text-[#1a5935]" />
+                          <span className="text-xs font-bold text-[#111813] uppercase tracking-wider">
+                            {aesResult.confusion_experiment.experiment_name}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          <span className="text-xs font-mono font-semibold text-[#1a5935]">
+                            {aesResult.confusion_experiment.changed_bits}/128 bits changed ({aesResult.confusion_experiment.changed_percentage}%)
+                          </span>
+                          <span className="text-[#536050] text-xs">{aesExpanded.confusion ? '▲' : '▼'}</span>
+                        </div>
+                      </button>
+                      {aesExpanded.confusion && (
+                        <div className="p-3.5 space-y-3 bg-white">
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                            <div className="p-2.5 bg-[#faf8f3] border border-[#eaede8] rounded-sm">
+                              <span className="text-[10px] uppercase font-bold text-[#6c7a68] block mb-1">
+                                {aesResult.confusion_experiment.fixed_parameter_label}
+                              </span>
+                              <div className="font-mono text-[11px] text-[#111813] break-all">
+                                {aesResult.confusion_experiment.fixed_parameter_hex}
+                              </div>
+                              {aesResult.confusion_experiment.fixed_parameter_text && (
+                                <div className="font-mono text-[10px] text-[#6c7a68] mt-0.5">
+                                  ASCII: "{aesResult.confusion_experiment.fixed_parameter_text}"
+                                </div>
+                              )}
+                            </div>
+                            <div className="p-2.5 bg-[#faf8f3] border border-[#eaede8] rounded-sm">
+                              <span className="text-[10px] uppercase font-bold text-[#6c7a68] block mb-1">Bit Flip Detail</span>
+                              <div className="font-mono text-[11px] text-[#111813]">
+                                {aesResult.confusion_experiment.flipped_bit_description}
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                            <div className="p-2.5 bg-white border border-[#d7ded4] rounded-sm">
+                              <span className="text-[10px] uppercase font-bold text-[#6c7a68] block mb-1">
+                                {aesResult.confusion_experiment.input_a_label}
+                              </span>
+                              <div className="font-mono text-[11px] text-[#111813] break-all">
+                                {aesResult.confusion_experiment.input_a_hex}
+                              </div>
+                            </div>
+                            <div className="p-2.5 bg-white border border-[#d7ded4] rounded-sm">
+                              <span className="text-[10px] uppercase font-bold text-[#6c7a68] block mb-1">
+                                {aesResult.confusion_experiment.input_b_label}
+                              </span>
+                              <div className="font-mono text-[11px] text-[#111813] break-all">
+                                {aesResult.confusion_experiment.input_b_hex}
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                            <div className="p-2.5 bg-white border border-[#d7ded4] rounded-sm">
+                              <span className="text-[10px] uppercase font-bold text-[#6c7a68] block mb-1">Ciphertext A</span>
+                              <div className="font-mono text-[11px] text-[#111813] break-all select-all flex items-center justify-between">
+                                <span>{aesResult.confusion_experiment.ciphertext_a_hex}</span>
+                                <button onClick={() => handleCopy(aesResult.confusion_experiment.ciphertext_a_hex)} className="ml-2 text-[#536050] hover:text-[#111813] shrink-0" title="Copy">
+                                  {copiedDigest === aesResult.confusion_experiment.ciphertext_a_hex ? <Check className="w-3 h-3 text-[#1a5935]" /> : <Copy className="w-3 h-3" />}
+                                </button>
+                              </div>
+                            </div>
+                            <div className="p-2.5 bg-white border border-[#d7ded4] rounded-sm">
+                              <span className="text-[10px] uppercase font-bold text-[#6c7a68] block mb-1">Ciphertext B</span>
+                              <div className="font-mono text-[11px] text-[#111813] break-all select-all flex items-center justify-between">
+                                <span>{aesResult.confusion_experiment.ciphertext_b_hex}</span>
+                                <button onClick={() => handleCopy(aesResult.confusion_experiment.ciphertext_b_hex)} className="ml-2 text-[#536050] hover:text-[#111813] shrink-0" title="Copy">
+                                  {copiedDigest === aesResult.confusion_experiment.ciphertext_b_hex ? <Check className="w-3 h-3 text-[#1a5935]" /> : <Copy className="w-3 h-3" />}
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Bit-change visualization */}
+                          <div className="p-2.5 bg-[#faf8f3] border border-[#eaede8] rounded-sm">
+                            <span className="text-[10px] uppercase font-bold text-[#6c7a68] block mb-1">
+                              Bit Difference Mask ({aesResult.confusion_experiment.changed_bits} of 128 bits differ)
+                            </span>
+                            <div className="font-mono text-[10px] leading-relaxed break-all">
+                              {aesResult.confusion_experiment.bit_differences_binary.split('').map((bit, i) => (
+                                <span key={i} className={bit === '1' ? 'text-red-600 font-bold' : 'text-[#bdc7ba]'}>{bit}</span>
+                              ))}
+                            </div>
+                          </div>
+
+                          <div className="p-2.5 bg-[#faf8f3] border border-[#eaede8] rounded-sm text-[11px] text-[#3e483c] leading-relaxed">
+                            {aesResult.confusion_experiment.explanation}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Diffusion Experiment */}
+                    <div className="border border-[#d7ded4] rounded-sm overflow-hidden">
+                      <button
+                        onClick={() => setAesExpanded((prev) => ({ ...prev, diffusion: !prev.diffusion }))}
+                        className="w-full flex items-center justify-between p-3 bg-[#faf8f3] hover:bg-[#eaede8] transition-colors text-left"
+                      >
+                        <div className="flex items-center gap-2">
+                          <Activity className="w-4 h-4 text-[#1a5935]" />
+                          <span className="text-xs font-bold text-[#111813] uppercase tracking-wider">
+                            {aesResult.diffusion_experiment.experiment_name}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          <span className="text-xs font-mono font-semibold text-[#1a5935]">
+                            {aesResult.diffusion_experiment.changed_bits}/128 bits changed ({aesResult.diffusion_experiment.changed_percentage}%)
+                          </span>
+                          <span className="text-[#536050] text-xs">{aesExpanded.diffusion ? '▲' : '▼'}</span>
+                        </div>
+                      </button>
+                      {aesExpanded.diffusion && (
+                        <div className="p-3.5 space-y-3 bg-white">
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                            <div className="p-2.5 bg-[#faf8f3] border border-[#eaede8] rounded-sm">
+                              <span className="text-[10px] uppercase font-bold text-[#6c7a68] block mb-1">
+                                {aesResult.diffusion_experiment.fixed_parameter_label}
+                              </span>
+                              <div className="font-mono text-[11px] text-[#111813] break-all">
+                                {aesResult.diffusion_experiment.fixed_parameter_hex}
+                              </div>
+                              {aesResult.diffusion_experiment.fixed_parameter_text && (
+                                <div className="font-mono text-[10px] text-[#6c7a68] mt-0.5">
+                                  ASCII: "{aesResult.diffusion_experiment.fixed_parameter_text}"
+                                </div>
+                              )}
+                            </div>
+                            <div className="p-2.5 bg-[#faf8f3] border border-[#eaede8] rounded-sm">
+                              <span className="text-[10px] uppercase font-bold text-[#6c7a68] block mb-1">Bit Flip Detail</span>
+                              <div className="font-mono text-[11px] text-[#111813]">
+                                {aesResult.diffusion_experiment.flipped_bit_description}
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                            <div className="p-2.5 bg-white border border-[#d7ded4] rounded-sm">
+                              <span className="text-[10px] uppercase font-bold text-[#6c7a68] block mb-1">
+                                {aesResult.diffusion_experiment.input_a_label}
+                              </span>
+                              <div className="font-mono text-[11px] text-[#111813] break-all">
+                                {aesResult.diffusion_experiment.input_a_hex}
+                              </div>
+                            </div>
+                            <div className="p-2.5 bg-white border border-[#d7ded4] rounded-sm">
+                              <span className="text-[10px] uppercase font-bold text-[#6c7a68] block mb-1">
+                                {aesResult.diffusion_experiment.input_b_label}
+                              </span>
+                              <div className="font-mono text-[11px] text-[#111813] break-all">
+                                {aesResult.diffusion_experiment.input_b_hex}
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                            <div className="p-2.5 bg-white border border-[#d7ded4] rounded-sm">
+                              <span className="text-[10px] uppercase font-bold text-[#6c7a68] block mb-1">Ciphertext A</span>
+                              <div className="font-mono text-[11px] text-[#111813] break-all select-all flex items-center justify-between">
+                                <span>{aesResult.diffusion_experiment.ciphertext_a_hex}</span>
+                                <button onClick={() => handleCopy(aesResult.diffusion_experiment.ciphertext_a_hex)} className="ml-2 text-[#536050] hover:text-[#111813] shrink-0" title="Copy">
+                                  {copiedDigest === aesResult.diffusion_experiment.ciphertext_a_hex ? <Check className="w-3 h-3 text-[#1a5935]" /> : <Copy className="w-3 h-3" />}
+                                </button>
+                              </div>
+                            </div>
+                            <div className="p-2.5 bg-white border border-[#d7ded4] rounded-sm">
+                              <span className="text-[10px] uppercase font-bold text-[#6c7a68] block mb-1">Ciphertext B</span>
+                              <div className="font-mono text-[11px] text-[#111813] break-all select-all flex items-center justify-between">
+                                <span>{aesResult.diffusion_experiment.ciphertext_b_hex}</span>
+                                <button onClick={() => handleCopy(aesResult.diffusion_experiment.ciphertext_b_hex)} className="ml-2 text-[#536050] hover:text-[#111813] shrink-0" title="Copy">
+                                  {copiedDigest === aesResult.diffusion_experiment.ciphertext_b_hex ? <Check className="w-3 h-3 text-[#1a5935]" /> : <Copy className="w-3 h-3" />}
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Bit-change visualization */}
+                          <div className="p-2.5 bg-[#faf8f3] border border-[#eaede8] rounded-sm">
+                            <span className="text-[10px] uppercase font-bold text-[#6c7a68] block mb-1">
+                              Bit Difference Mask ({aesResult.diffusion_experiment.changed_bits} of 128 bits differ)
+                            </span>
+                            <div className="font-mono text-[10px] leading-relaxed break-all">
+                              {aesResult.diffusion_experiment.bit_differences_binary.split('').map((bit, i) => (
+                                <span key={i} className={bit === '1' ? 'text-red-600 font-bold' : 'text-[#bdc7ba]'}>{bit}</span>
+                              ))}
+                            </div>
+                          </div>
+
+                          <div className="p-2.5 bg-[#faf8f3] border border-[#eaede8] rounded-sm text-[11px] text-[#3e483c] leading-relaxed">
+                            {aesResult.diffusion_experiment.explanation}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Educational Summary & Disclaimer */}
+                    <div className="p-3 bg-[#faf8f3] border border-[#d7ded4] rounded-sm text-xs text-[#536050] space-y-1.5 leading-relaxed">
+                      <div className="flex items-center gap-1.5 font-semibold text-[#111813]">
+                        <BookOpen className="w-4 h-4 text-[#1a5935]" />
+                        <span>Confusion & Diffusion — Educational Summary</span>
+                      </div>
+                      <div>{aesResult.educational_summary}</div>
+                      <div className="text-[10px] text-[#6c7a68] pt-1 border-t border-[#eaede8]">
+                        {aesResult.security_disclaimer}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
           </Card>
         </div>
