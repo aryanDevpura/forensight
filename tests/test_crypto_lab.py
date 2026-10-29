@@ -359,3 +359,196 @@ def test_sha256_compare_avalanche_effect():
     assert data["avalanche_percentage"] > 30.0
     assert "avalanche effect" in data["educational_note"].lower()
 
+
+# ---------------------------------------------------------------------------
+# Digital Signatures (RSA-PSS) Tests
+# ---------------------------------------------------------------------------
+
+def test_digital_signature_demo_valid_and_tampered_rejection():
+    """
+    POST /crypto-lab/sign-demo must sign in memory with RSA-PSS, verify the original,
+    and demonstrate that bitwise alteration of a copy in memory causes verification failure.
+    Temporary demo data must NOT be persisted in the database.
+    """
+    with SessionLocal() as db:
+        evidence_count_before = db.query(Evidence).count()
+
+    test_bytes = b"ForenSight Digital Signatures Non-Repudiation Test Vector 2026."
+
+    resp = client.post(
+        "/api/evidence/crypto-lab/sign-demo",
+        files={"file": ("signature_test.txt", io.BytesIO(test_bytes), "text/plain")},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+
+    assert "RSA-PSS" in data["algorithm"]
+    assert data["signer_key_id"] == "client-demo-01"
+    assert data["key_size_bits"] == 2048
+    assert data["signature_size_bytes"] == 256
+    assert data["signing_duration_ms"] >= 0
+
+    # Original verification must succeed
+    assert data["original_verified"] is True
+    assert data["original_file_size_bytes"] == len(test_bytes)
+    assert data["original_verification_duration_ms"] >= 0
+
+    # Tampered in-memory copy verification must fail
+    assert data["tampered_verified"] is False
+    assert data["tampered_verification_duration_ms"] >= 0
+    assert "flipped 1 bit" in data["tamper_description"].lower()
+    assert data["tampered_sha256"] != data["original_sha256"]
+
+    # Verify no evidence record was persisted in database
+    with SessionLocal() as db:
+        evidence_count_after = db.query(Evidence).count()
+        assert evidence_count_after == evidence_count_before
+
+
+def test_digital_signature_demo_empty_file():
+    """Signing demo must safely handle 0-byte empty file inputs without division or crash."""
+    resp = client.post(
+        "/api/evidence/crypto-lab/sign-demo",
+        files={"file": ("empty.dat", io.BytesIO(b""), "application/octet-stream")},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+
+    assert data["original_file_size_bytes"] == 0
+    assert data["original_verified"] is True
+    assert data["tampered_verified"] is False
+    assert data["signature_size_bytes"] == 256
+
+
+def test_evidence_signature_verification_valid():
+    """
+    POST /{evidence_id}/crypto-lab/verify-signature verifies the stored RSA-PSS
+    signature against the canonical manifest without writing custody history.
+    """
+    from server.app.models.custody import ChainOfCustody
+
+    test_content = b"Artifact for RSA-PSS digital signature verification lifecycle.\n"
+    filename = "signed_doc.txt"
+
+    upload_resp = upload_secure_evidence(client, test_content, filename=filename)
+    assert upload_resp.status_code == 201
+    ev_id = upload_resp.json()["evidence_id"]
+
+    with SessionLocal() as db:
+        custody_count_before = db.query(ChainOfCustody).filter(ChainOfCustody.evidence_id == ev_id).count()
+
+    resp = client.post(f"/api/evidence/{ev_id}/crypto-lab/verify-signature")
+    assert resp.status_code == 200
+    data = resp.json()
+
+    assert data["evidence_id"] == ev_id
+    assert data["has_signature"] is True
+    assert data["is_valid"] is True
+    assert data["signature_status"] == "VERIFIED_VALID"
+    assert data["signer_key_id"] == "client-demo-01"
+    assert data["signature_size_bytes"] == 256
+    assert data["verification_duration_ms"] >= 0
+    assert "RSA-PSS" in data["signature_algorithm"]
+
+    # Must NOT create custody history during read-only verification
+    with SessionLocal() as db:
+        custody_count_after = db.query(ChainOfCustody).filter(ChainOfCustody.evidence_id == ev_id).count()
+        assert custody_count_after == custody_count_before
+
+
+def test_evidence_signature_verification_modified_content_fails():
+    """
+    If the canonical manifest content is tampered with, the RSA-PSS verification
+    must fail mathematically with SIGNATURE_MISMATCH.
+    """
+    from pathlib import Path
+
+    test_content = b"Artifact to test signature failure upon content tampering.\n"
+    upload_resp = upload_secure_evidence(client, test_content, filename="tamper_sig.txt")
+    assert upload_resp.status_code == 201
+    ev_id = upload_resp.json()["evidence_id"]
+
+    # Tamper with the manifest file on disk
+    with SessionLocal() as db:
+        ev = db.query(Evidence).filter(Evidence.evidence_id == ev_id).first()
+        target_path = Path(ev.file_path)
+        manifest_path = target_path.with_suffix(target_path.suffix + ".manifest.json")
+        raw_manifest = bytearray(manifest_path.read_bytes())
+        raw_manifest[-1] ^= 0x01
+        manifest_path.write_bytes(bytes(raw_manifest))
+
+    resp = client.post(f"/api/evidence/{ev_id}/crypto-lab/verify-signature")
+    assert resp.status_code == 200
+    data = resp.json()
+
+    assert data["has_signature"] is True
+    assert data["is_valid"] is False
+    assert data["signature_status"] == "SIGNATURE_MISMATCH"
+    assert "failed" in data["details"].lower()
+
+
+def test_evidence_signature_verification_missing_signature():
+    """Evidence lacking an RSA-PSS signature must return MISSING_SIGNATURE and is_valid=False."""
+    import uuid
+    unique_ev_id = f"EVD-NO-SIG-{uuid.uuid4().hex[:8].upper()}"
+
+    with SessionLocal() as db:
+        ev = Evidence(
+            evidence_id=unique_ev_id,
+            file_name="unsigned_log.txt",
+            evidence_type="LOG",
+            source_device="legacy-host",
+            file_path="server/storage/evidence/nonexistent.txt",
+            file_size_bytes=100,
+            sha256_hash="0" * 64,
+            rsa_signature=None,
+            signer_key_id=None,
+        )
+        db.add(ev)
+        db.commit()
+
+    resp = client.post(f"/api/evidence/{unique_ev_id}/crypto-lab/verify-signature")
+    assert resp.status_code == 200
+    data = resp.json()
+
+    assert data["has_signature"] is False
+    assert data["is_valid"] is False
+    assert data["signature_status"] == "MISSING_SIGNATURE"
+
+
+def test_evidence_signature_verification_untrusted_signer():
+    """Evidence with an untrusted or unknown signer key ID must return UNTRUSTED_SIGNER."""
+    import uuid
+    unique_ev_id = f"EVD-UNTRUSTED-{uuid.uuid4().hex[:8].upper()}"
+
+    with SessionLocal() as db:
+        ev = Evidence(
+            evidence_id=unique_ev_id,
+            file_name="untrusted_doc.pdf",
+            evidence_type="DOCUMENT",
+            source_device="external-host",
+            file_path="server/storage/evidence/nonexistent.pdf",
+            file_size_bytes=100,
+            sha256_hash="0" * 64,
+            rsa_signature="aa" * 256,
+            signer_key_id="rogue-signer-x",
+        )
+        db.add(ev)
+        db.commit()
+
+    resp = client.post(f"/api/evidence/{unique_ev_id}/crypto-lab/verify-signature")
+    assert resp.status_code == 200
+    data = resp.json()
+
+    assert data["has_signature"] is True
+    assert data["is_valid"] is False
+    assert data["signature_status"] == "UNTRUSTED_SIGNER"
+
+
+def test_evidence_signature_verification_nonexistent_returns_404():
+    """Requesting signature verification for a non-existent evidence artifact returns 404."""
+    resp = client.post("/api/evidence/EVD-NONEXISTENT-7777/crypto-lab/verify-signature")
+    assert resp.status_code == 404
+    assert "not found" in resp.json()["detail"].lower()
+
+

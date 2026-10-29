@@ -8,6 +8,8 @@ import {
   hashEvidenceDemo,
   hashStandaloneFile,
   hashCompareFiles,
+  verifyEvidenceSignature,
+  signInteractiveDemo,
 } from '../api/client';
 import {
   Shield,
@@ -17,6 +19,7 @@ import {
   RefreshCw,
   AlertTriangle,
   CheckCircle2,
+  XCircle,
   Cpu,
   Layers,
   FileText,
@@ -31,8 +34,12 @@ import {
   BookOpen,
   Copy,
   Check,
+  CheckCheck,
   Activity,
   FileCheck,
+  PenTool,
+  ShieldCheck,
+  Fingerprint,
 } from 'lucide-react';
 
 function formatBytes(bytes) {
@@ -44,7 +51,7 @@ function formatBytes(bytes) {
 }
 
 export function CryptoLabPage() {
-  const [activeTab, setActiveTab] = useState('encryption'); // 'encryption' | 'hashing'
+  const [activeTab, setActiveTab] = useState('encryption'); // 'encryption' | 'hashing' | 'signatures'
 
   const [evidenceList, setEvidenceList] = useState([]);
   const [selectedEvidenceId, setSelectedEvidenceId] = useState('');
@@ -72,6 +79,15 @@ export function CryptoLabPage() {
   const [isComparing, setIsComparing] = useState(false);
   const [copiedDigest, setCopiedDigest] = useState(null);
 
+  // Digital Signatures state
+  const [sigEvidenceId, setSigEvidenceId] = useState('');
+  const [evidenceSigResult, setEvidenceSigResult] = useState(null);
+  const [isVerifyingSig, setIsVerifyingSig] = useState(false);
+
+  const [sigDemoFile, setSigDemoFile] = useState(null);
+  const [sigDemoResult, setSigDemoResult] = useState(null);
+  const [isSigningDemo, setIsSigningDemo] = useState(false);
+
   const handleCopy = (text) => {
     if (navigator?.clipboard?.writeText) {
       navigator.clipboard.writeText(text);
@@ -91,13 +107,14 @@ export function CryptoLabPage() {
       if (list.length > 0) {
         if (!selectedEvidenceId) setSelectedEvidenceId(list[0].evidence_id);
         if (!hashEvidenceId) setHashEvidenceId(list[0].evidence_id);
+        if (!sigEvidenceId) setSigEvidenceId(list[0].evidence_id);
       }
     } catch (err) {
       setError(err.message || 'Failed to fetch evidence list');
     } finally {
       setIsLoadingList(false);
     }
-  }, [selectedEvidenceId, hashEvidenceId]);
+  }, [selectedEvidenceId, hashEvidenceId, sigEvidenceId]);
 
   useEffect(() => {
     loadEvidenceList();
@@ -204,7 +221,38 @@ export function CryptoLabPage() {
     }
   };
 
-  const selectedEvidence = evidenceList.find((e) => e.evidence_id === selectedEvidenceId);
+  // Explicit user trigger for evidence signature verification
+  const handleVerifyEvidenceSignature = async () => {
+    const targetId = sigEvidenceId || selectedEvidenceId;
+    if (!targetId) return;
+    setIsVerifyingSig(true);
+    setError(null);
+    try {
+      const result = await verifyEvidenceSignature(targetId);
+      setEvidenceSigResult(result);
+    } catch (err) {
+      setError(err.message || 'Signature verification failed');
+      setEvidenceSigResult(null);
+    } finally {
+      setIsVerifyingSig(false);
+    }
+  };
+
+  // Explicit user trigger for interactive signature demo
+  const handleSignInteractiveDemo = async () => {
+    if (!sigDemoFile) return;
+    setIsSigningDemo(true);
+    setError(null);
+    try {
+      const result = await signInteractiveDemo(sigDemoFile);
+      setSigDemoResult(result);
+    } catch (err) {
+      setError(err.message || 'Signature demonstration failed');
+      setSigDemoResult(null);
+    } finally {
+      setIsSigningDemo(false);
+    }
+  };
 
   return (
     <div className="space-y-6">
@@ -231,6 +279,17 @@ export function CryptoLabPage() {
         >
           <Hash className="w-4 h-4" />
           <span>SHA-256 Cryptographic Hashing</span>
+        </button>
+        <button
+          onClick={() => setActiveTab('signatures')}
+          className={`pb-2.5 flex items-center gap-2 transition-colors border-b-2 ${
+            activeTab === 'signatures'
+              ? 'border-[#1a5935] text-[#1a5935]'
+              : 'border-transparent text-[#536050] hover:text-[#111813]'
+          }`}
+        >
+          <PenTool className="w-4 h-4" />
+          <span>Digital Signatures</span>
         </button>
       </div>
 
@@ -829,7 +888,6 @@ export function CryptoLabPage() {
                   {/* Hash Measurements (One or Two Representations) */}
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     {evidenceHashResult.hashes.map((item, idx) => {
-                      const isPlaintext = item.representation_label.toLowerCase().includes('plaintext');
                       const matchesBaseline = item.sha256_digest === evidenceHashResult.stored_acquisition_hash;
 
                       return (
@@ -971,9 +1029,9 @@ export function CryptoLabPage() {
                         title="Copy digest"
                       >
                         {copiedDigest === standaloneHashResult.sha256_digest ? (
-                          <Check className="w-4 h-4 text-[#1a5935]" />
+                          <Check className="w-3.5 h-3.5 text-[#1a5935]" />
                         ) : (
-                          <Copy className="w-4 h-4" />
+                          <Copy className="w-3.5 h-3.5" />
                         )}
                       </button>
                     </div>
@@ -1190,6 +1248,419 @@ export function CryptoLabPage() {
                       <span>Avalanche Effect Principle & Forensic Interpretation</span>
                     </div>
                     <div>{compareResult.educational_note}</div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </Card>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* TAB 3: DIGITAL SIGNATURES (RSA-PSS)                                       */}
+      {/* ========================================================================= */}
+      {activeTab === 'signatures' && (
+        <div className="space-y-6">
+          {/* Educational Overview Card */}
+          <Card
+            title="RSA-PSS Digital Signature Architecture & Non-Repudiation"
+            subtitle="Public-key asymmetric authentication combining RSA 2048-bit keys, SHA-256 digests, and randomized 32-byte PSS salt"
+            action={
+              <span className="text-[11px] font-mono text-[#536050] bg-[#faf8f3] px-2 py-0.5 border border-[#d7ded4] rounded-sm">
+                PKCS#1 v2.1 / FIPS 186-4
+              </span>
+            }
+          >
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
+              <div className="p-3.5 bg-[#faf8f3] border border-[#d7ded4] rounded-sm space-y-2">
+                <div className="flex items-center gap-2 text-[#1a5935] font-bold uppercase tracking-wider text-[11px]">
+                  <KeyRound className="w-4 h-4 shrink-0" />
+                  <span>1. Asymmetric Origin Provenance</span>
+                </div>
+                <div className="text-[#3e483c] leading-relaxed text-[11px]">
+                  <strong>Non-Repudiation:</strong> The signature is generated using the uploader's private signing key and verified using their trusted public key. Only the legitimate keyholder could have signed the artifact.
+                </div>
+                <div className="text-[10px] font-mono text-[#6c7a68] pt-1 border-t border-[#eaede8]">
+                  Key Scheme: RSA 2048-bit (PKCS#8)
+                </div>
+              </div>
+
+              <div className="p-3.5 bg-[#faf8f3] border border-[#d7ded4] rounded-sm space-y-2">
+                <div className="flex items-center gap-2 text-[#1a5935] font-bold uppercase tracking-wider text-[11px]">
+                  <ShieldCheck className="w-4 h-4 shrink-0" />
+                  <span>2. Probabilistic PSS Padding</span>
+                </div>
+                <div className="text-[#3e483c] leading-relaxed text-[11px]">
+                  <strong>Salted Randomization:</strong> RSA-PSS injects a 32-byte pseudorandom salt into the message digest prior to signing, preventing chosen-ciphertext, signature replay, and multi-target attacks.
+                </div>
+                <div className="text-[10px] font-mono text-[#6c7a68] pt-1 border-t border-[#eaede8]">
+                  Mask Generation: MGF1 with SHA-256
+                </div>
+              </div>
+
+              <div className="p-3.5 bg-[#faf8f3] border border-[#d7ded4] rounded-sm space-y-2">
+                <div className="flex items-center gap-2 text-[#1a5935] font-bold uppercase tracking-wider text-[11px]">
+                  <CheckCheck className="w-4 h-4 shrink-0" />
+                  <span>3. Integrity Beyond Checksums</span>
+                </div>
+                <div className="text-[#3e483c] leading-relaxed text-[11px]">
+                  <strong>Mathematical Authentication:</strong> A SHA-256 hash merely verifies whether bytes match an expected digest. An RSA-PSS digital signature binds the artifact directly to the identity of the signer.
+                </div>
+                <div className="text-[10px] font-mono text-[#6c7a68] pt-1 border-t border-[#eaede8]">
+                  Signature Size: 256 bytes (2048 bits)
+                </div>
+              </div>
+            </div>
+          </Card>
+
+          {/* Section 1: Existing Evidence Artifact Signature Verification */}
+          <Card
+            title="Evidence Artifact Digital Signature Verification"
+            subtitle="Cryptographically verifies stored RSA-PSS signatures against trusted signer public keys without modifying evidence or custody history"
+            action={
+              <button
+                onClick={loadEvidenceList}
+                disabled={isLoadingList || isVerifyingSig}
+                className="p-1.5 text-[#536050] hover:text-[#111813] hover:bg-[#eaede8] rounded-sm border border-[#d7ded4] transition-colors disabled:opacity-50"
+                title="Refresh evidence artifacts"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${isLoadingList ? 'animate-spin' : ''}`} />
+              </button>
+            }
+          >
+            <div className="space-y-4">
+              <div className="flex flex-col sm:flex-row gap-3 items-end">
+                <div className="flex-1 w-full">
+                  <label className="block text-xs font-semibold text-[#111813] mb-1.5 uppercase tracking-wider">
+                    Select Target Forensic Artifact
+                  </label>
+                  {isLoadingList ? (
+                    <div className="h-9 flex items-center px-3 bg-[#faf8f3] border border-[#d7ded4] rounded-sm text-xs text-[#536050]">
+                      Loading evidence artifacts...
+                    </div>
+                  ) : evidenceList.length === 0 ? (
+                    <div className="h-9 flex items-center px-3 bg-[#faf8f3] border border-[#d7ded4] rounded-sm text-xs text-[#536050]">
+                      No evidence artifacts found in repository.
+                    </div>
+                  ) : (
+                    <select
+                      value={sigEvidenceId}
+                      onChange={(e) => setSigEvidenceId(e.target.value)}
+                      disabled={isVerifyingSig}
+                      className="w-full h-9 px-3 text-xs bg-white border border-[#bdc7ba] rounded-sm focus:outline-none focus:border-[#1a5935] text-[#111813] font-mono"
+                    >
+                      {evidenceList.map((ev) => (
+                        <option key={ev.evidence_id} value={ev.evidence_id}>
+                          {ev.evidence_id} — {ev.file_name} ({formatBytes(ev.file_size_bytes)}) [{ev.evidence_type}] {ev.signer_key_id ? `[Signer: ${ev.signer_key_id}]` : '[Unsigned]'}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                </div>
+
+                <button
+                  onClick={handleVerifyEvidenceSignature}
+                  disabled={isVerifyingSig || !sigEvidenceId}
+                  className="h-9 px-5 bg-[#1a5935] hover:bg-[#144629] text-white rounded-sm text-xs font-semibold tracking-wide transition-colors disabled:opacity-50 flex items-center gap-2 shrink-0"
+                >
+                  {isVerifyingSig ? (
+                    <>
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      <span>Verifying RSA-PSS Signature...</span>
+                    </>
+                  ) : (
+                    <>
+                      <ShieldCheck className="w-3.5 h-3.5" />
+                      <span>Verify Digital Signature</span>
+                    </>
+                  )}
+                </button>
+              </div>
+
+              {/* Existing Signature Verification Results */}
+              {evidenceSigResult && (
+                <div className="space-y-4 pt-3 border-t border-[#eaede8]">
+                  {/* Status Strip */}
+                  <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+                    <div className="p-3 bg-white border border-[#d7ded4] rounded-sm flex items-center justify-between">
+                      <div>
+                        <span className="text-[10px] uppercase font-bold text-[#6c7a68] block">Verification Status</span>
+                        <span className="text-xs font-semibold font-mono text-[#111813]">
+                          {evidenceSigResult.signature_status}
+                        </span>
+                      </div>
+                      <StatusBadge
+                        status={
+                          evidenceSigResult.is_valid
+                            ? 'verified'
+                            : evidenceSigResult.signature_status === 'MISSING_SIGNATURE' ||
+                              evidenceSigResult.signature_status === 'CANONICAL_MANIFEST_MISSING'
+                            ? 'standby'
+                            : 'error'
+                        }
+                        label={
+                          evidenceSigResult.is_valid
+                            ? 'AUTHENTIC'
+                            : evidenceSigResult.signature_status === 'MISSING_SIGNATURE'
+                            ? 'UNSIGNED'
+                            : evidenceSigResult.signature_status === 'CANONICAL_MANIFEST_MISSING'
+                            ? 'LEGACY ARTIFACT'
+                            : 'INVALID'
+                        }
+                        size="xs"
+                      />
+                    </div>
+
+                    <div className="p-3 bg-white border border-[#d7ded4] rounded-sm">
+                      <span className="text-[10px] uppercase font-bold text-[#6c7a68] block">Signer Key Identifier</span>
+                      <div className="text-xs font-semibold font-mono text-[#111813]">
+                        {evidenceSigResult.signer_key_id || 'None'}
+                      </div>
+                      <div className="text-[10px] font-mono text-[#6c7a68]">
+                        Trusted Signers Repository
+                      </div>
+                    </div>
+
+                    <div className="p-3 bg-white border border-[#d7ded4] rounded-sm">
+                      <span className="text-[10px] uppercase font-bold text-[#6c7a68] block">Verification Time</span>
+                      <div className="text-xs font-semibold font-mono text-[#111813]">
+                        {evidenceSigResult.verification_duration_ms.toFixed(3)} ms
+                      </div>
+                      <div className="text-[10px] font-mono text-[#6c7a68]">
+                        Measured hardware duration
+                      </div>
+                    </div>
+
+                    <div className="p-3 bg-white border border-[#d7ded4] rounded-sm">
+                      <span className="text-[10px] uppercase font-bold text-[#6c7a68] block">Signature Size</span>
+                      <div className="text-xs font-semibold font-mono text-[#111813]">
+                        {evidenceSigResult.signature_size_bytes} bytes
+                      </div>
+                      <div className="text-[10px] font-mono text-[#6c7a68]">
+                        {evidenceSigResult.signature_size_bytes * 8} bits (RSA-PSS)
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Details & Signature Preview */}
+                  <div className="p-3.5 bg-white border border-[#d7ded4] rounded-sm space-y-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#eaede8] pb-2">
+                      <div className="font-mono text-xs text-[#111813]">
+                        <span className="text-[#6c7a68] uppercase font-bold mr-1.5">Artifact:</span>
+                        <strong>{evidenceSigResult.file_name}</strong> ({evidenceSigResult.evidence_id})
+                      </div>
+                      <span className="text-[11px] font-mono text-[#536050]">
+                        Algorithm: {evidenceSigResult.signature_algorithm}
+                      </span>
+                    </div>
+
+                    {evidenceSigResult.signature_hex_preview && (
+                      <div>
+                        <span className="text-[10px] font-mono text-[#6c7a68] uppercase block mb-1">
+                          Stored RSA-PSS Signature Preview
+                        </span>
+                        <div className="p-2 bg-[#faf8f3] border border-[#eaede8] rounded-sm font-mono text-[11px] text-[#111813] break-all select-all flex items-center justify-between">
+                          <span>{evidenceSigResult.signature_hex_preview}</span>
+                          <button
+                            onClick={() => handleCopy(evidenceSigResult.signature_hex_preview)}
+                            className="ml-2 text-[#536050] hover:text-[#111813] shrink-0"
+                            title="Copy signature preview"
+                          >
+                            {copiedDigest === evidenceSigResult.signature_hex_preview ? (
+                              <Check className="w-3.5 h-3.5 text-[#1a5935]" />
+                            ) : (
+                              <Copy className="w-3.5 h-3.5" />
+                            )}
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="text-xs text-[#3e483c] leading-relaxed">
+                      <strong>Verification Details:</strong> {evidenceSigResult.details}
+                    </div>
+
+                    <div className="text-[11px] text-[#536050] pt-2 border-t border-[#eaede8]">
+                      <strong>Signed Payload Scope:</strong> {evidenceSigResult.signed_data_description}
+                    </div>
+                  </div>
+
+                  {/* Important Forensic Notice */}
+                  <div className="p-3 bg-[#faf8f3] border border-[#d7ded4] rounded-sm text-xs text-[#536050] flex items-start gap-2.5">
+                    <Fingerprint className="w-4 h-4 text-[#1a5935] shrink-0 mt-0.5" />
+                    <div className="leading-relaxed">
+                      <strong>Forensic Principle:</strong> A valid SHA-256 hash confirms only that the file content matches an expected baseline digest, but cannot establish who created or transmitted the artifact. A cryptographically verified RSA-PSS signature uniquely validates uploader identity and guarantees non-repudiation.
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </Card>
+
+          {/* Section 2: Interactive RSA-PSS Non-Repudiation & Tamper Demonstration */}
+          <Card
+            title="Interactive RSA-PSS Non-Repudiation & Tamper Demonstration"
+            subtitle="Signs uploaded content in-memory, verifies original signature, alters 1 bit in memory, and proves mathematical rejection of tampered data"
+          >
+            <div className="space-y-4">
+              <div className="flex flex-col sm:flex-row gap-3 items-end">
+                <div className="flex-1 w-full">
+                  <label className="block text-xs font-semibold text-[#111813] mb-1.5 uppercase tracking-wider">
+                    Select Test Artifact for Signing Experiment (any file or 0-byte input)
+                  </label>
+                  <input
+                    type="file"
+                    onChange={(e) => {
+                      if (e.target.files && e.target.files[0]) {
+                        setSigDemoFile(e.target.files[0]);
+                      }
+                    }}
+                    disabled={isSigningDemo}
+                    className="w-full text-xs text-[#536050] file:mr-4 file:py-2 file:px-4 file:rounded-sm file:border file:border-[#bdc7ba] file:text-xs file:font-semibold file:bg-[#faf8f3] file:text-[#111813] hover:file:bg-[#eaede8] cursor-pointer"
+                  />
+                </div>
+
+                <button
+                  onClick={handleSignInteractiveDemo}
+                  disabled={isSigningDemo || !sigDemoFile}
+                  className="h-9 px-5 bg-[#1a5935] hover:bg-[#144629] text-white rounded-sm text-xs font-semibold tracking-wide transition-colors disabled:opacity-50 flex items-center gap-2 shrink-0"
+                >
+                  {isSigningDemo ? (
+                    <>
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      <span>Signing & Verifying...</span>
+                    </>
+                  ) : (
+                    <>
+                      <PenTool className="w-3.5 h-3.5" />
+                      <span>Run Signature Demonstration</span>
+                    </>
+                  )}
+                </button>
+              </div>
+
+              {/* Demo Results */}
+              {sigDemoResult && (
+                <div className="space-y-4 pt-3 border-t border-[#eaede8]">
+                  {/* Performance Telemetry Strip */}
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs font-mono">
+                    <div className="p-3 bg-white border border-[#d7ded4] rounded-sm">
+                      <span className="text-[10px] text-[#6c7a68] uppercase font-bold block">Signer Key ID</span>
+                      <span className="text-xs font-semibold text-[#111813]">{sigDemoResult.signer_key_id}</span>
+                      <span className="text-[10px] text-[#6c7a68] block mt-0.5">{sigDemoResult.key_size_bits}-bit RSA Key</span>
+                    </div>
+
+                    <div className="p-3 bg-white border border-[#d7ded4] rounded-sm">
+                      <span className="text-[10px] text-[#6c7a68] uppercase font-bold block">Signing Time</span>
+                      <span className="text-xs font-semibold text-[#111813]">{sigDemoResult.signing_duration_ms.toFixed(3)} ms</span>
+                      <span className="text-[10px] text-[#6c7a68] block mt-0.5">Server private key</span>
+                    </div>
+
+                    <div className="p-3 bg-white border border-[#d7ded4] rounded-sm">
+                      <span className="text-[10px] text-[#6c7a68] uppercase font-bold block">Signature Size</span>
+                      <span className="text-xs font-semibold text-[#111813]">{sigDemoResult.signature_size_bytes} bytes</span>
+                      <span className="text-[10px] text-[#6c7a68] block mt-0.5">PSS Salt: {sigDemoResult.salt_length_bytes} B</span>
+                    </div>
+
+                    <div className="p-3 bg-white border border-[#d7ded4] rounded-sm">
+                      <span className="text-[10px] text-[#6c7a68] uppercase font-bold block">Algorithm</span>
+                      <span className="text-xs font-semibold text-[#111813]">RSA-PSS / SHA-256</span>
+                      <span className="text-[10px] text-[#6c7a68] block mt-0.5">Salted PSS Scheme</span>
+                    </div>
+                  </div>
+
+                  {/* Side-by-Side Verification Cards: Original vs Tampered */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {/* Original Input Verification */}
+                    <div className="p-4 bg-[#f0f9f3] border border-[#227244]/30 rounded-sm space-y-3">
+                      <div className="flex items-center justify-between border-b border-[#227244]/20 pb-2">
+                        <div className="flex items-center gap-1.5 font-bold text-xs text-[#144629]">
+                          <CheckCircle2 className="w-4 h-4 text-[#1a5935]" />
+                          <span>Original Content: {sigDemoResult.file_name}</span>
+                        </div>
+                        <StatusBadge status="verified" label="VERIFIED INTACT" size="xs" />
+                      </div>
+
+                      <div className="space-y-1.5 font-mono text-[11px]">
+                        <div>
+                          <span className="text-[#6c7a68] text-[10px] uppercase font-bold block">Payload Size</span>
+                          <span className="text-[#111813]">{formatBytes(sigDemoResult.original_file_size_bytes)} ({sigDemoResult.original_file_size_bytes} bytes)</span>
+                        </div>
+                        <div>
+                          <span className="text-[#6c7a68] text-[10px] uppercase font-bold block">SHA-256 Digest</span>
+                          <span className="text-[#111813] break-all select-all">{sigDemoResult.original_sha256}</span>
+                        </div>
+                        <div>
+                          <span className="text-[#6c7a68] text-[10px] uppercase font-bold block">Verification Time</span>
+                          <span className="text-[#111813]">{sigDemoResult.original_verification_duration_ms.toFixed(3)} ms</span>
+                        </div>
+                      </div>
+
+                      <div className="text-[11px] text-[#144629] p-2 bg-white/70 border border-[#227244]/20 rounded-sm">
+                        Original payload verified successfully against the RSA-PSS signature under the trusted public key.
+                      </div>
+                    </div>
+
+                    {/* Tampered Input Verification */}
+                    <div className="p-4 bg-[#fef2f2] border border-[#ef4444]/30 rounded-sm space-y-3">
+                      <div className="flex items-center justify-between border-b border-[#ef4444]/20 pb-2">
+                        <div className="flex items-center gap-1.5 font-bold text-xs text-[#991b1b]">
+                          <XCircle className="w-4 h-4 text-[#dc2626]" />
+                          <span>Altered Copy (In-Memory Tampering)</span>
+                        </div>
+                        <StatusBadge status="error" label="REJECTED / TAMPERED" size="xs" />
+                      </div>
+
+                      <div className="space-y-1.5 font-mono text-[11px]">
+                        <div>
+                          <span className="text-[#6c7a68] text-[10px] uppercase font-bold block">Payload Size</span>
+                          <span className="text-[#111813]">{formatBytes(sigDemoResult.tampered_file_size_bytes)} ({sigDemoResult.tampered_file_size_bytes} bytes)</span>
+                        </div>
+                        <div>
+                          <span className="text-[#6c7a68] text-[10px] uppercase font-bold block">Altered SHA-256 Digest</span>
+                          <span className="text-[#111813] break-all select-all">{sigDemoResult.tampered_sha256}</span>
+                        </div>
+                        <div>
+                          <span className="text-[#6c7a68] text-[10px] uppercase font-bold block">Verification Time</span>
+                          <span className="text-[#111813]">{sigDemoResult.tampered_verification_duration_ms.toFixed(3)} ms</span>
+                        </div>
+                      </div>
+
+                      <div className="text-[11px] text-[#991b1b] p-2 bg-white/70 border border-[#ef4444]/20 rounded-sm">
+                        <strong>Tamper Details:</strong> {sigDemoResult.tamper_description}
+                        <div className="mt-1 font-semibold">The original digital signature was rejected. Cryptographic tampering was immediately detected.</div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Generated Signature Hex Preview */}
+                  <div className="p-3.5 bg-white border border-[#d7ded4] rounded-sm space-y-2">
+                    <span className="text-[10px] font-mono text-[#6c7a68] uppercase font-bold block">
+                      Generated RSA-PSS Signature ({sigDemoResult.signature_size_bytes} bytes / 512 hex characters)
+                    </span>
+                    <div className="p-2.5 bg-[#faf8f3] border border-[#eaede8] rounded-sm font-mono text-[11px] text-[#111813] break-all select-all flex items-center justify-between">
+                      <span className="max-h-20 overflow-y-auto">{sigDemoResult.signature_hex}</span>
+                      <button
+                        onClick={() => handleCopy(sigDemoResult.signature_hex)}
+                        className="ml-2 text-[#536050] hover:text-[#111813] shrink-0"
+                        title="Copy signature"
+                      >
+                        {copiedDigest === sigDemoResult.signature_hex ? (
+                          <Check className="w-3.5 h-3.5 text-[#1a5935]" />
+                        ) : (
+                          <Copy className="w-3.5 h-3.5" />
+                        )}
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Educational takeaway */}
+                  <div className="p-3 bg-[#faf8f3] border border-[#d7ded4] rounded-sm text-xs text-[#536050] space-y-1.5 leading-relaxed">
+                    <div className="flex items-center gap-1.5 font-semibold text-[#111813]">
+                      <BookOpen className="w-4 h-4 text-[#1a5935]" />
+                      <span>Non-Repudiation Principle & Demonstration Scope</span>
+                    </div>
+                    <div>{sigDemoResult.educational_note}</div>
                   </div>
                 </div>
               )}

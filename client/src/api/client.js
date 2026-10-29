@@ -168,6 +168,39 @@ export async function hashCompareFiles(fileA, fileB) {
   return await response.json();
 }
 
+export async function verifyEvidenceSignature(evidenceId) {
+  const response = await fetch(`${BASE_URL}/api/evidence/${encodeURIComponent(evidenceId)}/crypto-lab/verify-signature`, {
+    method: 'POST',
+    headers: {
+      'Accept': 'application/json',
+    },
+  });
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => null);
+    const message = errorData?.detail || `Signature verification failed: HTTP ${response.status}`;
+    throw new Error(message);
+  }
+  return await response.json();
+}
+
+export async function signInteractiveDemo(file) {
+  const formData = new FormData();
+  formData.append('file', file);
+  const response = await fetch(`${BASE_URL}/api/evidence/crypto-lab/sign-demo`, {
+    method: 'POST',
+    headers: {
+      'Accept': 'application/json',
+    },
+    body: formData,
+  });
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => null);
+    const message = errorData?.detail || `Signature demonstration failed: HTTP ${response.status}`;
+    throw new Error(message);
+  }
+  return await response.json();
+}
+
 export async function triggerAnalysis(evidenceId) {
   const response = await fetch(`${BASE_URL}/api/analysis/${encodeURIComponent(evidenceId)}`, {
     method: 'POST',

@@ -3,6 +3,7 @@ import { Sidebar } from './components/layout/Sidebar';
 import { Header } from './components/layout/Header';
 import { DashboardPage } from './pages/DashboardPage';
 import { EvidencePage } from './pages/EvidencePage';
+import { CryptoLabPage } from './pages/CryptoLabPage';
 import { AnalysisPage } from './pages/AnalysisPage';
 import { TimelinePage } from './pages/TimelinePage';
 import { CustodyPage } from './pages/CustodyPage';
@@ -14,6 +15,7 @@ import { fetchHealth, fetchSystemStats } from './api/client';
 const TAB_TITLES = {
   dashboard: { title: 'Investigation Console', subtitle: 'Real-time telemetry and database status' },
   evidence: { title: 'Evidence Repository', subtitle: 'Forensic artifacts storage and integrity registry' },
+  cryptolab: { title: 'Cryptography Lab', subtitle: 'Interactive verification of AES-256-GCM encryption and RSA authentication' },
   analysis: { title: 'Forensic Analysis', subtitle: 'Packet analysis and security anomaly detection' },
   timeline: { title: 'Investigation Timeline', subtitle: 'Chronological security event audit logs' },
   custody: { title: 'Chain of Custody', subtitle: 'Tamper-evident evidence handling log' },
@@ -92,6 +94,7 @@ export default function App() {
               />
             )}
             {currentTab === 'evidence' && <EvidencePage onEvidenceUploaded={loadSystemStatus} />}
+            {currentTab === 'cryptolab' && <CryptoLabPage />}
             {currentTab === 'analysis' && <AnalysisPage />}
             {currentTab === 'timeline' && <TimelinePage />}
             {currentTab === 'custody' && <CustodyPage />}

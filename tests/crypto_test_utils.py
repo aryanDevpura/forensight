@@ -47,7 +47,7 @@ def create_signed_encrypted_payload(
 
     # 1. AES key & encryption
     key = aes_key or get_random_bytes(32)
-    packaged, _ = encrypt_payload(content, key)
+    packaged, duration_sec = encrypt_payload(content, key)
 
     nonce = packaged[:GCM_NONCE_LENGTH]
     tag = packaged[GCM_NONCE_LENGTH : GCM_NONCE_LENGTH + GCM_TAG_LENGTH]
@@ -102,6 +102,7 @@ def create_signed_encrypted_payload(
         "tag": tag.hex(),
         "timestamp": ts,
         "upload_id": u_id,
+        "encryption_duration_ms": round(duration_sec * 1000.0, 4),
     }
     if description:
         form_data["description"] = description

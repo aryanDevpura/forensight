@@ -138,6 +138,7 @@ export function EvidencePage({ onEvidenceUploaded }) {
 
       // 2. Encrypt evidence with AES-256-GCM
       setUploadProgressText('Encrypting evidence with AES-256-GCM...');
+      const t0Enc = performance.now();
       const {
         rawAesKey,
         nonceHex,
@@ -145,6 +146,7 @@ export function EvidencePage({ onEvidenceUploaded }) {
         packagedBytes,
         payloadSha256,
       } = await encryptEvidencePayload(fileBuffer);
+      const encryptionDurationMs = Math.max(0.0001, performance.now() - t0Enc);
 
       // 3. Wrap AES key with server RSA-OAEP public key
       setUploadProgressText('Wrapping AES key with Server RSA-OAEP public key...');
@@ -190,6 +192,7 @@ export function EvidencePage({ onEvidenceUploaded }) {
       formData.append('tag', tagHex);
       formData.append('timestamp', timestamp.toString());
       formData.append('upload_id', uploadId);
+      formData.append('encryption_duration_ms', encryptionDurationMs.toFixed(4));
 
       setUploadProgressText('Verifying RSA signature & decrypting AES-GCM on server...');
       const result = await uploadEvidence(formData);

@@ -193,6 +193,43 @@ class HashCompareResult(BaseModel):
     educational_note: str
 
 
+# Digital Signature Demonstration Schemas
+class EvidenceSignatureVerifyResponse(BaseModel):
+    evidence_id: str
+    file_name: str
+    has_signature: bool
+    signature_status: str
+    is_valid: bool
+    signature_algorithm: str
+    signer_key_id: Optional[str] = None
+    signature_hex_preview: Optional[str] = None
+    signature_size_bytes: int = 0
+    verification_duration_ms: float = 0.0
+    signed_data_description: str
+    details: str
+
+
+class InteractiveSignatureDemoResponse(BaseModel):
+    file_name: str
+    algorithm: str
+    signer_key_id: str
+    key_size_bits: int
+    salt_length_bytes: int
+    signature_size_bytes: int
+    signature_hex: str
+    signing_duration_ms: float
+    original_file_size_bytes: int
+    original_sha256: str
+    original_verified: bool
+    original_verification_duration_ms: float
+    tampered_file_size_bytes: int
+    tampered_sha256: str
+    tampered_verified: bool
+    tampered_verification_duration_ms: float
+    tamper_description: str
+    educational_note: str
+
+
 # Finding Schema Placeholders
 class FindingBase(BaseModel):
     finding_id: str

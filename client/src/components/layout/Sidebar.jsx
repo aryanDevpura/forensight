@@ -9,11 +9,13 @@ import {
   FileText,
   Sliders,
   Shield,
+  KeyRound,
 } from 'lucide-react';
 
 const NAV_ITEMS = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { id: 'evidence', label: 'Evidence', icon: HardDrive },
+  { id: 'cryptolab', label: 'Crypto Lab', icon: KeyRound },
   { id: 'analysis', label: 'Analysis', icon: Activity },
   { id: 'timeline', label: 'Timeline', icon: History },
   { id: 'custody', label: 'Chain of Custody', icon: LinkIcon },

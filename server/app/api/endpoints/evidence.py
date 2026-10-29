@@ -21,9 +21,13 @@ from server.app.core.crypto import (
 from server.app.core.rsa_crypto import (
     build_canonical_signing_data,
     get_trusted_signer_public_key,
+    get_client_demo_private_key,
+    rsa_pss_sign,
     rsa_pss_verify,
     rsa_oaep_decrypt,
     DEFAULT_SIGNER_ID,
+    RSA_KEY_SIZE,
+    PSS_SALT_BYTES,
 )
 from Crypto.Cipher import AES
 from server.app.database.session import get_db
@@ -40,6 +44,8 @@ from server.app.api.endpoints.schemas import (
     EvidenceHashDemoResponse,
     StandaloneHashResponse,
     HashCompareResult,
+    EvidenceSignatureVerifyResponse,
+    InteractiveSignatureDemoResponse,
 )
 
 
@@ -370,12 +376,16 @@ async def upload_evidence(
             detail="Illegal file storage path detected.",
         )
 
+    manifest_path = destination_path.with_suffix(destination_path.suffix + ".manifest.json")
     try:
         with open(destination_path, "wb") as dest_file:
             dest_file.write(raw_incoming_bytes)
+        manifest_path.write_bytes(canonical_bytes)
     except Exception as exc:
         if destination_path.exists():
             destination_path.unlink()
+        if manifest_path.exists():
+            manifest_path.unlink()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to write evidence artifact: {str(exc)}",
@@ -409,6 +419,8 @@ async def upload_evidence(
     except Exception as exc:
         if destination_path.exists():
             destination_path.unlink()
+        if manifest_path.exists():
+            manifest_path.unlink()
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -1273,6 +1285,241 @@ def hash_evidence_artifact(
         hashes=hashes,
         note=note,
     )
+
+
+# ---------------------------------------------------------------------------
+# Cryptography Lab - Digital Signatures (RSA-PSS)
+# ---------------------------------------------------------------------------
+
+@router.post(
+    "/crypto-lab/sign-demo",
+    response_model=InteractiveSignatureDemoResponse,
+    summary="Interactive RSA-PSS digital signature demonstration with tamper verification",
+    description=(
+        "Signs uploaded content using server-managed demo RSA-PSS key, verifies original signature, "
+        "modifies a byte in memory, and verifies against tampered copy to demonstrate non-repudiation and integrity."
+    ),
+)
+async def sign_interactive_demo(
+    file: UploadFile = File(...),
+) -> InteractiveSignatureDemoResponse:
+    content = await file.read()
+    filename = file.filename or "demo_artifact.dat"
+
+    # 1. Sign original bytes using client demo private key
+    demo_priv_key = get_client_demo_private_key()
+    sig_bytes, sign_duration_sec = rsa_pss_sign(content, demo_priv_key)
+    signing_duration_ms = round(sign_duration_sec * 1000.0, 4)
+
+    # 2. Verify against original content using trusted public key
+    demo_pub_key = get_trusted_signer_public_key(DEFAULT_SIGNER_ID)
+    if not demo_pub_key:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Trusted public key for demonstration is missing.",
+        )
+
+    orig_valid, orig_verify_sec = rsa_pss_verify(content, sig_bytes, demo_pub_key)
+    orig_verify_ms = round(orig_verify_sec * 1000.0, 4)
+
+    # 3. Create tampered copy in memory
+    if len(content) == 0:
+        tampered_content = b"TAMPERED_EMPTY_PAYLOAD"
+        tamper_desc = "Input was empty (0 bytes). Injected 22 altered bytes in memory to demonstrate verification failure on content modification."
+    else:
+        byte_arr = bytearray(content)
+        original_byte_val = byte_arr[0]
+        byte_arr[0] ^= 0x01  # Flip least significant bit of first byte
+        tampered_content = bytes(byte_arr)
+        tamper_desc = f"Flipped 1 bit in byte 0 (0x{original_byte_val:02x} -> 0x{tampered_content[0]:02x}). Content length unchanged."
+
+    # 4. Verify original signature against tampered content
+    tamp_valid, tamp_verify_sec = rsa_pss_verify(tampered_content, sig_bytes, demo_pub_key)
+    tamp_verify_ms = round(tamp_verify_sec * 1000.0, 4)
+
+    orig_sha256 = hashlib.sha256(content).hexdigest()
+    tamp_sha256 = hashlib.sha256(tampered_content).hexdigest()
+
+    educational_note = (
+        "Digital signatures provide cryptographic integrity, authenticity, and non-repudiation. "
+        "Unlike symmetric checksums, an RSA-PSS digital signature can only be created by the private key holder, "
+        "yet can be verified by anyone possessing the corresponding public key. Any modification to the signed bytes "
+        "causes mathematical verification failure, preventing undetected tampering or spoofing."
+    )
+
+    return InteractiveSignatureDemoResponse(
+        file_name=filename,
+        algorithm=f"RSA-PSS with SHA-256 ({RSA_KEY_SIZE}-bit key, {PSS_SALT_BYTES}-byte salt)",
+        signer_key_id=DEFAULT_SIGNER_ID,
+        key_size_bits=RSA_KEY_SIZE,
+        salt_length_bytes=PSS_SALT_BYTES,
+        signature_size_bytes=len(sig_bytes),
+        signature_hex=sig_bytes.hex(),
+        signing_duration_ms=signing_duration_ms,
+        original_file_size_bytes=len(content),
+        original_sha256=orig_sha256,
+        original_verified=orig_valid,
+        original_verification_duration_ms=orig_verify_ms,
+        tampered_file_size_bytes=len(tampered_content),
+        tampered_sha256=tamp_sha256,
+        tampered_verified=tamp_valid,
+        tampered_verification_duration_ms=tamp_verify_ms,
+        tamper_description=tamper_desc,
+        educational_note=educational_note,
+    )
+
+
+@router.post(
+    "/{evidence_id}/crypto-lab/verify-signature",
+    response_model=EvidenceSignatureVerifyResponse,
+    summary="Verify digital signature of existing evidence artifact",
+    description=(
+        "Cryptographically verifies the stored RSA-PSS digital signature against the trusted public key "
+        "and original signed canonical manifest. Does not modify evidence or custody history."
+    ),
+)
+def verify_evidence_signature(
+    evidence_id: str,
+    db: Session = Depends(get_db),
+) -> EvidenceSignatureVerifyResponse:
+    evidence = db.query(Evidence).filter(Evidence.evidence_id == evidence_id).first()
+    if evidence is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Evidence artifact '{evidence_id}' not found.",
+        )
+
+    # 1. Missing signature
+    if not evidence.rsa_signature:
+        return EvidenceSignatureVerifyResponse(
+            evidence_id=evidence.evidence_id,
+            file_name=evidence.file_name,
+            has_signature=False,
+            signature_status="MISSING_SIGNATURE",
+            is_valid=False,
+            signature_algorithm="None",
+            signer_key_id=evidence.signer_key_id,
+            signature_hex_preview=None,
+            signature_size_bytes=0,
+            verification_duration_ms=0.0,
+            signed_data_description="No signature was submitted or recorded during artifact acquisition.",
+            details="Artifact lacks an RSA digital signature. Authentication cannot be confirmed via public-key cryptography.",
+        )
+
+    # 2. Check trusted signer public key
+    trusted_pub_key = get_trusted_signer_public_key(evidence.signer_key_id)
+    if trusted_pub_key is None:
+        return EvidenceSignatureVerifyResponse(
+            evidence_id=evidence.evidence_id,
+            file_name=evidence.file_name,
+            has_signature=True,
+            signature_status="UNTRUSTED_SIGNER",
+            is_valid=False,
+            signature_algorithm="RSA-PSS with SHA-256",
+            signer_key_id=evidence.signer_key_id,
+            signature_hex_preview=evidence.rsa_signature[:64] + "...",
+            signature_size_bytes=len(evidence.rsa_signature) // 2 if evidence.rsa_signature else 0,
+            verification_duration_ms=0.0,
+            signed_data_description="Untrusted signer public key.",
+            details=f"Signer key identifier '{evidence.signer_key_id}' is not recognized in the trusted signers repository.",
+        )
+
+    # 3. Parse signature bytes
+    try:
+        sig_bytes = bytes.fromhex(evidence.rsa_signature)
+    except ValueError:
+        try:
+            sig_bytes = base64.b64decode(evidence.rsa_signature)
+        except Exception:
+            return EvidenceSignatureVerifyResponse(
+                evidence_id=evidence.evidence_id,
+                file_name=evidence.file_name,
+                has_signature=True,
+                signature_status="INVALID_SIGNATURE_ENCODING",
+                is_valid=False,
+                signature_algorithm="RSA-PSS with SHA-256",
+                signer_key_id=evidence.signer_key_id,
+                signature_hex_preview=evidence.rsa_signature[:64] + "...",
+                signature_size_bytes=0,
+                verification_duration_ms=0.0,
+                signed_data_description="Malformed signature data.",
+                details="Stored digital signature could not be decoded as valid hexadecimal or Base64.",
+            )
+
+    # 4. Check for stored canonical manifest
+    target_path = Path(evidence.file_path).resolve()
+    evidence_dir = settings.resolved_evidence_dir.resolve()
+    try:
+        target_path.relative_to(evidence_dir)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Security error: Path traversal detected.",
+        )
+
+    manifest_path = target_path.with_suffix(target_path.suffix + ".manifest.json")
+    if manifest_path.exists():
+        canonical_bytes = manifest_path.read_bytes()
+        signed_desc = "Canonical forensic ingestion manifest (lexicographically ordered JSON containing filename, hashes, nonce, tag, device, collector, and timestamp)"
+    else:
+        # Legacy record where manifest was not saved to disk
+        return EvidenceSignatureVerifyResponse(
+            evidence_id=evidence.evidence_id,
+            file_name=evidence.file_name,
+            has_signature=True,
+            signature_status="CANONICAL_MANIFEST_MISSING",
+            is_valid=False,
+            signature_algorithm=f"RSA-PSS with SHA-256 ({RSA_KEY_SIZE}-bit key, {PSS_SALT_BYTES}-byte salt)",
+            signer_key_id=evidence.signer_key_id,
+            signature_hex_preview=evidence.rsa_signature[:64] + "..." if len(evidence.rsa_signature) > 64 else evidence.rsa_signature,
+            signature_size_bytes=len(sig_bytes),
+            verification_duration_ms=0.0,
+            signed_data_description="Canonical pre-ingestion manifest not stored.",
+            details="Digital signature exists and signer is trusted, but the original pre-ingestion canonical signing manifest was not preserved on disk for this legacy record. Verification cannot be confirmed without original canonical parameters.",
+        )
+
+    # 5. Mathematically verify RSA-PSS signature
+    is_valid, duration_sec = rsa_pss_verify(
+        canonical_data=canonical_bytes,
+        signature=sig_bytes,
+        public_key=trusted_pub_key,
+    )
+    verification_duration_ms = round(duration_sec * 1000.0, 4)
+
+    preview = (
+        evidence.rsa_signature[:64] + "..."
+        if len(evidence.rsa_signature) > 64
+        else evidence.rsa_signature
+    )
+
+    if is_valid:
+        status_label = "VERIFIED_VALID"
+        details_text = (
+            f"RSA-PSS digital signature mathematically verified intact against trusted signer key '{evidence.signer_key_id}'. "
+            "Guarantees that the artifact provenance, metadata, and acquisition payload have not been altered."
+        )
+    else:
+        status_label = "SIGNATURE_MISMATCH"
+        details_text = (
+            "Cryptographic signature verification FAILED. The digital signature does not match the canonical artifact parameters "
+            f"under the public key for '{evidence.signer_key_id}'. Artifact may be forged or tampered."
+        )
+
+    return EvidenceSignatureVerifyResponse(
+        evidence_id=evidence.evidence_id,
+        file_name=evidence.file_name,
+        has_signature=True,
+        signature_status=status_label,
+        is_valid=is_valid,
+        signature_algorithm=f"RSA-PSS with SHA-256 ({RSA_KEY_SIZE}-bit key, {PSS_SALT_BYTES}-byte salt)",
+        signer_key_id=evidence.signer_key_id,
+        signature_hex_preview=preview,
+        signature_size_bytes=len(sig_bytes),
+        verification_duration_ms=verification_duration_ms,
+        signed_data_description=signed_desc,
+        details=details_text,
+    )
+
 
 
 
