@@ -218,3 +218,4 @@ npm run build
 | `/api/benchmarks` | GET | Retrieve recorded performance benchmarks | None |
 | `/api/benchmarks/summary` | GET | Aggregate benchmark statistics and throughput | None |
 | `/api/benchmarks/evidence/{evidence_id}` | GET | Benchmarks associated with specific evidence | None |
+  
