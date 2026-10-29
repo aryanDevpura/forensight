@@ -11,9 +11,10 @@ The system is organized into three primary logical tiers:
 1. **Forensic Investigation Server (`server/`)**:
    - Central investigation backend built with **FastAPI** and **SQLAlchemy 2.0**.
    - Storage layer powered by local filesystem directories (`./storage/evidence` and `./storage/reports`) and an embedded **SQLite** database (`forensight.db`).
-   - Secure evidence ingestion engine with streaming SHA-256 calculation, HMAC-SHA256 request authentication, and AES-256-GCM transfer decryption.
-   - Forensic analysis engine for PCAP network packet dissection, threat heuristic inspection (e.g. port scans, cleartext protocol detection), chronological forensic timeline generation, and chain-of-custody tracking.
-   - High-resolution monotonic benchmark recorder auditing hashing, ingestion, HMAC verification, decryption, and analysis latencies.
+   - Secure evidence ingestion engine with streaming SHA-256 calculation, RSA-PSS signature verification, and AES-256-GCM transfer decryption.
+   - Comprehensive **Crypto Laboratory** endpoints demonstrating AES-256-GCM decryption, standalone & artifact SHA-256 hashing, avalanche effect, Shannon confusion & diffusion block cipher experiments, and interactive RSA-PSS digital signature tamper detection.
+   - Forensic analysis engine for PCAP network packet dissection, threat heuristic inspection (e.g., port scans, cleartext protocol detection), chronological forensic timeline generation, and chain-of-custody tracking.
+   - High-resolution monotonic benchmark recorder auditing hashing, ingestion, encryption, decryption, RSA signing, RSA verification, and packet analysis latencies.
 
 2. **Evidence Collector & Reusable Utilities (`collector/`)**:
    - Edge collection utilities designed to run on investigation workstations or remote endpoints/VMs.
@@ -22,10 +23,17 @@ The system is organized into three primary logical tiers:
    - Reusable HMAC-SHA256 signature and metrics helpers (`sign_request_with_metrics`).
 
 3. **Investigation Dashboard (`client/`)**:
-   - Desktop-grade web interface built with **React**, **Vite**, and **Tailwind CSS**.
+   - Desktop-grade web interface built with **React 18**, **Vite**, and **Tailwind CSS**.
    - Full Web Crypto API client-side cryptography pipeline (SHA-256 hashing, AES-256-GCM symmetric encryption, RSA-OAEP key wrapping, and RSA-PSS digital signing).
-   - Information-first design featuring real system telemetry, database status, module readiness, and empty state representations without synthetic/mock evidence.
-   - Interactive pages for Evidence Management, PCAP Analysis, Chain of Custody Ledger, Forensic Timeline Exploration, Performance Telemetry Dashboard, and System Configuration.
+   - Dedicated **Cryptography Laboratory** (`CryptoLabPage`) with three specialized sub-panels:
+     - **AES-256-GCM Authenticated Encryption & Decryption**: Authenticated tag validation, RSA envelope unwrapping, high-entropy hex/base64 ciphertext inspection, and plaintext/image rendering.
+     - **SHA-256 Cryptographic Hashing**: Preimage, second-preimage, and collision resistance educational panels; dual-representation evidence hashing; standalone streaming benchmark; bit-level Hamming distance & avalanche effect demonstration (~50% bit flip ratio); and single-block AES confusion & diffusion experiments.
+     - **Digital Signatures (RSA-PSS)**: 2048-bit key non-repudiation, probabilistic salt verification, stored signature inspection, and an interactive in-memory tamper simulation proving immediate rejection upon a single-bit alteration.
+   - **Performance Telemetry Dashboard** (`PerformancePage`) featuring:
+     - Real hardware latency metrics and MB/s throughput measurements for 7 core operations: AES Encryption, AES Decryption, SHA-256 Hashing, RSA Signing, RSA Verification, Evidence Ingestion, and PCAP Analysis (HMAC distortion removed from default views).
+     - Segmented, readable bar charts split by operational magnitude ($\le 10\text{ ms}$ cryptographic primitives vs macroscopic I/O workflows).
+     - Symmetric (AES Encrypt vs Decrypt) and asymmetric (RSA Signing vs Verification) side-by-side comparative ratio cards.
+     - Multi-tier payload size filters (<10 KB, 10–100 KB, 100 KB–1 MB, >1 MB) and operation filters.
 
 ---
 
@@ -34,17 +42,22 @@ The system is organized into three primary logical tiers:
 - **Unified Secure Evidence Ingestion (`POST /api/evidence`)**:
   - Sole supported evidence ingestion path. All uploads are encrypted before leaving the browser.
   - **SHA-256 Original Integrity**: Plaintext hash calculated over original bytes prior to encryption and verified server-side after decryption.
-  - **AES-256-GCM Payload Encryption**: Fresh 256-bit symmetric key per artifact; unique 96-bit nonce; 128-bit authentication tag.
+  - **AES-256-GCM Payload Encryption**: Fresh 256-bit symmetric key per artifact; unique 96-bit nonce; 128-bit Poly1305/GHASH authentication tag.
   - **RSA-OAEP Key Wrapping**: AES key encrypted under server's RSA public key (2048-bit, SHA-256, MGF1).
-  - **RSA-PSS Digital Signature**: Canonical JSON metadata claims signed using client's RSA private key and verified against server's trusted signer registry.
-  - **Preserved Custody & Storage**: At-rest encrypted artifact persistence with full ACQUIRED chain-of-custody recording.
+  - **RSA-PSS Digital Signature**: Canonical JSON metadata claims signed using client's RSA private key (`client-demo-01` or custom PEM) and verified against the server's trusted signer registry.
+  - **Real Client-Side Signing Instrumentation**: Captures high-precision browser signing time (`signing_duration_ms`) via `performance.now()`.
+  - **Preserved Custody & Storage**: At-rest encrypted artifact persistence with full `ACQUIRED` chain-of-custody recording.
   - **Authorized Download**: Verified on-the-fly decryption with authentication tag check and SHA-256 validation.
+- **Crypto Laboratory Demonstration Suite (`/crypto-lab`)**:
+  - **AES Confusion & Diffusion**: Deterministic single-block AES-128 experiments testing 1-bit key flip (Shannon confusion) and 1-bit plaintext flip (diffusion), rendering bit-difference masks and percentage change.
+  - **Avalanche Effect & Collision Resistance**: Two-file digest comparator measuring exact Hamming bit distance, hexadecimal character differences, and avalanche ratio.
+  - **Interactive Tamper Testing**: In-memory single-bit corruption demonstrating mathematical invalidation of RSA-PSS signatures.
 - **Cryptographic Chain of Custody**:
   - Immutable audit trail recording evidence lifecycle actions (`ACQUIRED`, `ANALYZED`, etc.), actors, storage paths, and SHA-256 integrity notes.
 - **Forensic Timeline & Correlation**:
   - Automatic extraction of chronological network flow events and security findings from PCAP artifacts.
-- **Auditable Performance Telemetry**:
-  - Microsecond-accurate monotonic timer instrumentation recording actual runtime duration (ms) and throughput (MB/s) for hashing, ingestion, HMAC verification, AES decryption, and packet analysis.
+- **Auditable Performance Telemetry (`/performance`)**:
+  - Microsecond-accurate monotonic timer instrumentation recording actual runtime duration (ms) and throughput (MB/s) persisted directly to SQLite.
 
 ---
 
@@ -52,11 +65,12 @@ The system is organized into three primary logical tiers:
 
 ```
 forensight/
-├── client/                     # React + Vite + Tailwind CSS Frontend
+├── client/                     # React 18 + Vite + Tailwind CSS Frontend
 │   ├── src/
 │   │   ├── api/                # REST client for backend communication
 │   │   ├── components/         # Layout (Sidebar, Header) and reusable UI widgets
-│   │   ├── pages/              # Dashboard, Evidence, Analysis, Custody, Timeline, Performance, Settings
+│   │   ├── pages/              # Evidence, CryptoLab, Performance, Analysis, Custody, Timeline, Settings
+│   │   ├── utils/              # Web Crypto API helpers (AES-GCM, RSA-PSS, RSA-OAEP, SHA-256)
 │   │   ├── App.jsx             # Shell & view router coordinator
 │   │   └── main.jsx            # React root mount
 │   ├── package.json
@@ -65,7 +79,7 @@ forensight/
 ├── server/                     # FastAPI Backend Server
 │   ├── app/
 │   │   ├── api/
-│   │   │   ├── endpoints/      # Health, system stats, evidence, analysis, custody, timeline, benchmarks
+│   │   │   ├── endpoints/      # Health, system stats, evidence, crypto-lab, analysis, custody, benchmarks
 │   │   │   └── routes.py       # API route registry
 │   │   ├── core/               # Configuration settings, HMAC auth, AES-GCM crypto, benchmark recorder
 │   │   ├── database/           # SQLite engine, sessions, schema initialization
@@ -82,10 +96,13 @@ forensight/
 │   ├── config.py               # Collector settings, endpoints, and credentials
 │   ├── crypto.py               # AES-256-GCM authenticated transfer encryption
 │   └── main.py                 # Standalone collector CLI test runner
-├── tests/                      # Automated test suite (pytest - 56 test cases)
+├── tests/                      # Automated test suite (pytest - 161 test cases)
+│   ├── crypto_test_utils.py    # Test fixtures & mock cryptographic generators
+│   ├── test_aes_confusion_diffusion.py # Shannon confusion & diffusion unit tests
 │   ├── test_analysis.py        # PCAP dissection, heuristics, and findings tests
 │   ├── test_benchmarks.py      # Runtime benchmark instrumentation tests
 │   ├── test_collector_config.py# Collector config default tests
+│   ├── test_crypto_lab.py      # Crypto Lab endpoints (AES, SHA-256, RSA-PSS, tampering)
 │   ├── test_custody.py         # Chain of custody lifecycle tests
 │   ├── test_encryption.py      # AES-256-GCM transfer encryption and error handling tests
 │   ├── test_evidence.py        # Evidence upload, SHA-256 hashing, path traversal tests
@@ -186,15 +203,19 @@ success, details = collector.upload_evidence_authenticated("sample.pcap", source
 print(success, details)
 ```
 
-### 5. Running Automated Tests
+### 5. Running Automated Tests & Verification
 
-Run the full pytest suite:
+Run the full backend test suite (159 passed, 2 skipped):
 
 ```bash
+# Set PYTHONPATH so server modules resolve correctly
+$env:PYTHONPATH="."  # Windows PowerShell
+# export PYTHONPATH="."  # Linux / macOS
+
 python -m pytest tests/ -v --tb=short
 ```
 
-Run frontend build verification:
+Run frontend production build verification:
 ```bash
 cd client
 npm run build
@@ -204,20 +225,27 @@ npm run build
 
 ## API Summary
 
-| Endpoint | Method | Description | Auth Required |
+| Endpoint | Method | Description | Auth / Security |
 |---|---|---|---|
 | `/api/health` | GET | Server health, database status, and storage availability | None |
 | `/api/system/stats` | GET | Real database record counts and subsystem state | None |
 | `/api/system/public-keys` | GET | Retrieve server RSA public key & demo signing credentials | None |
 | `/api/evidence` | GET | List all registered forensic evidence records | None |
-| `/api/evidence` | POST | Unified secure evidence upload (RSA-PSS + AES-GCM + SHA-256) | RSA-PSS Signature |
+| `/api/evidence` | POST | Unified secure evidence upload (RSA-PSS + AES-GCM + SHA-256 + client timing) | RSA-PSS Signature |
 | `/api/evidence/{evidence_id}/download` | GET | Authorized evidence download (on-the-fly decryption & integrity check) | None |
 | `/api/evidence/{evidence_id}/verify` | POST | Post-acquisition integrity verification against stored SHA-256 | None |
+| `/api/evidence/{evidence_id}/crypto-lab/metadata` | GET | Cryptographic ledger parameters and wrapped key preview | None |
+| `/api/evidence/{evidence_id}/crypto-lab/decrypt` | POST | Live AES-256-GCM decryption & plaintext recovery demo | None |
+| `/api/evidence/crypto-lab/hash-evidence` | POST | Dual-representation evidence artifact SHA-256 hashing demo | None |
+| `/api/evidence/crypto-lab/hash-file` | POST | Standalone 64 KB chunked streaming SHA-256 hashing benchmark | None |
+| `/api/evidence/crypto-lab/hash-compare` | POST | Two-file SHA-256 comparison and avalanche effect metrics | None |
+| `/api/evidence/crypto-lab/aes-confusion-diffusion` | POST | Single-block AES-128 Shannon confusion & diffusion experiment | None |
+| `/api/evidence/{evidence_id}/crypto-lab/verify-signature` | POST | Verify stored RSA-PSS signature against trusted public key | None |
+| `/api/evidence/crypto-lab/sign-demo` | POST | In-memory RSA-PSS signing & single-bit tamper rejection demonstration | None |
 | `/api/custody/{evidence_id}` | GET | Retrieve chain-of-custody audit records | None |
 | `/api/analysis/{evidence_id}` | POST | Execute PCAP analysis and heuristic detection | None |
 | `/api/analysis/findings` | GET | Retrieve detected security and forensic findings | None |
 | `/api/timeline/{evidence_id}` | GET | Chronological forensic event timeline | None |
-| `/api/benchmarks` | GET | Retrieve recorded performance benchmarks | None |
-| `/api/benchmarks/summary` | GET | Aggregate benchmark statistics and throughput | None |
+| `/api/benchmarks` | GET | Retrieve recorded performance benchmarks with size & name filters | Optional filters |
+| `/api/benchmarks/summary` | GET | Aggregate benchmark statistics and throughput | Optional `exclude_hmac` |
 | `/api/benchmarks/evidence/{evidence_id}` | GET | Benchmarks associated with specific evidence | None |
-  
