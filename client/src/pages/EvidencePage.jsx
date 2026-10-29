@@ -175,7 +175,9 @@ export function EvidencePage({ onEvidenceUploaded }) {
         encrypted_payload_sha256: payloadSha256,
       });
 
+      const t0Sign = performance.now();
       const signatureHex = await signCanonicalDataWithRsaPss(signingKeyPem, canonicalBytes);
+      const signingDurationMs = Math.max(0.0001, performance.now() - t0Sign);
 
       // 5. Send upload to FastAPI
       setUploadProgressText('Uploading encrypted payload to Investigation Server...');
@@ -193,6 +195,7 @@ export function EvidencePage({ onEvidenceUploaded }) {
       formData.append('timestamp', timestamp.toString());
       formData.append('upload_id', uploadId);
       formData.append('encryption_duration_ms', encryptionDurationMs.toFixed(4));
+      formData.append('signing_duration_ms', signingDurationMs.toFixed(4));
 
       setUploadProgressText('Verifying RSA signature & decrypting AES-GCM on server...');
       const result = await uploadEvidence(formData);

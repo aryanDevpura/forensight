@@ -36,6 +36,7 @@ def create_signed_encrypted_payload(
     corrupt_signature: bool = False,
     corrupt_digest: bool = False,
     aes_key: Optional[bytes] = None,
+    signing_duration_ms: Optional[float] = None,
 ) -> Tuple[bytes, Dict[str, Any]]:
     """
     Helper creating encrypted evidence payload and signed form parameters
@@ -86,7 +87,7 @@ def create_signed_encrypted_payload(
     )
 
     client_priv = client_private_key or get_client_demo_private_key()
-    sig_bytes, _ = rsa_pss_sign(canonical_bytes, client_priv)
+    sig_bytes, sign_duration_sec = rsa_pss_sign(canonical_bytes, client_priv)
 
     if corrupt_signature:
         sig_bytes = bytes([sig_bytes[0] ^ 0xFF]) + sig_bytes[1:]
@@ -104,6 +105,11 @@ def create_signed_encrypted_payload(
         "upload_id": u_id,
         "encryption_duration_ms": round(duration_sec * 1000.0, 4),
     }
+    if signing_duration_ms is not None:
+        form_data["signing_duration_ms"] = float(signing_duration_ms)
+    elif sign_duration_sec is not None:
+        form_data["signing_duration_ms"] = round(sign_duration_sec * 1000.0, 4)
+
     if description:
         form_data["description"] = description
 

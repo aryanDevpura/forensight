@@ -31,16 +31,25 @@ router = APIRouter(prefix="/benchmarks", tags=["Performance Benchmarks"])
 def list_benchmarks(
     benchmark_name: Optional[str] = None,
     evidence_id: Optional[str] = None,
+    min_size_bytes: Optional[int] = None,
+    max_size_bytes: Optional[int] = None,
+    exclude_hmac: bool = False,
     db: Session = Depends(get_db),
 ) -> List[BenchmarkResultRead]:
     """
-    Retrieve benchmark results with optional filtering.
+    Retrieve benchmark results with optional filtering by name, evidence ID, or payload size.
     """
     query = db.query(BenchmarkResult)
-    if benchmark_name:
+    if benchmark_name and benchmark_name != "ALL":
         query = query.filter(BenchmarkResult.benchmark_name == benchmark_name)
+    elif exclude_hmac:
+        query = query.filter(BenchmarkResult.benchmark_name != "HMAC_VERIFICATION")
     if evidence_id:
         query = query.filter(BenchmarkResult.evidence_id == evidence_id)
+    if min_size_bytes is not None:
+        query = query.filter(BenchmarkResult.sample_size_bytes >= min_size_bytes)
+    if max_size_bytes is not None:
+        query = query.filter(BenchmarkResult.sample_size_bytes <= max_size_bytes)
 
     return query.order_by(BenchmarkResult.recorded_at.desc(), BenchmarkResult.id.desc()).all()
 
@@ -82,24 +91,25 @@ def get_benchmarks_for_evidence(
     ),
 )
 def get_benchmarks_summary(
+    exclude_hmac: bool = False,
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
     """
     Calculates genuine summary statistics grouped by benchmark operation.
     """
-    results = (
-        db.query(
-            BenchmarkResult.benchmark_name,
-            func.count(BenchmarkResult.id).label("count"),
-            func.avg(BenchmarkResult.duration_ms).label("avg_duration_ms"),
-            func.min(BenchmarkResult.duration_ms).label("min_duration_ms"),
-            func.max(BenchmarkResult.duration_ms).label("max_duration_ms"),
-            func.avg(BenchmarkResult.throughput_mbps).label("avg_throughput_mbps"),
-            func.sum(BenchmarkResult.sample_size_bytes).label("total_bytes_processed"),
-        )
-        .group_by(BenchmarkResult.benchmark_name)
-        .all()
+    query = db.query(
+        BenchmarkResult.benchmark_name,
+        func.count(BenchmarkResult.id).label("count"),
+        func.avg(BenchmarkResult.duration_ms).label("avg_duration_ms"),
+        func.min(BenchmarkResult.duration_ms).label("min_duration_ms"),
+        func.max(BenchmarkResult.duration_ms).label("max_duration_ms"),
+        func.avg(BenchmarkResult.throughput_mbps).label("avg_throughput_mbps"),
+        func.sum(BenchmarkResult.sample_size_bytes).label("total_bytes_processed"),
     )
+    if exclude_hmac:
+        query = query.filter(BenchmarkResult.benchmark_name != "HMAC_VERIFICATION")
+
+    results = query.group_by(BenchmarkResult.benchmark_name).all()
 
     summary_data = {}
     for r in results:
@@ -112,7 +122,11 @@ def get_benchmarks_summary(
             "total_bytes_processed": int(r.total_bytes_processed or 0),
         }
 
+    total_count_query = db.query(BenchmarkResult)
+    if exclude_hmac:
+        total_count_query = total_count_query.filter(BenchmarkResult.benchmark_name != "HMAC_VERIFICATION")
+
     return {
         "operations": summary_data,
-        "total_records": db.query(BenchmarkResult).count(),
+        "total_records": total_count_query.count(),
     }

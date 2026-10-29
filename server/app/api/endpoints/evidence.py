@@ -138,6 +138,7 @@ async def upload_evidence(
     timestamp: Optional[int] = Form(default=None),
     upload_id: Optional[str] = Form(default=None),
     encryption_duration_ms: Optional[float] = Form(default=None),
+    signing_duration_ms: Optional[float] = Form(default=None),
     # Header fallbacks:
     x_forensight_original_sha256: Optional[str] = Header(None, alias="X-ForenSight-Original-SHA256"),
     x_forensight_encrypted_key: Optional[str] = Header(None, alias="X-ForenSight-Encrypted-Key"),
@@ -148,6 +149,7 @@ async def upload_evidence(
     x_forensight_timestamp: Optional[str] = Header(None, alias="X-ForenSight-Timestamp"),
     x_forensight_upload_id: Optional[str] = Header(None, alias="X-ForenSight-Upload-ID"),
     x_forensight_encryption_duration_ms: Optional[str] = Header(None, alias="X-ForenSight-Encryption-Duration-MS"),
+    x_forensight_signing_duration_ms: Optional[str] = Header(None, alias="X-ForenSight-Signing-Duration-MS"),
     db: Session = Depends(get_db),
 ) -> EvidenceRead:
     """
@@ -474,6 +476,28 @@ async def upload_evidence(
             sample_size_bytes=len(recovered_plaintext),
             evidence_id=evidence_record.evidence_id,
             system_info="AES-256-GCM client-side encryption",
+        )
+
+    sign_dur_ms: Optional[float] = None
+    if signing_duration_ms is not None:
+        try:
+            sign_dur_ms = float(signing_duration_ms)
+        except (ValueError, TypeError):
+            pass
+    elif x_forensight_signing_duration_ms:
+        try:
+            sign_dur_ms = float(x_forensight_signing_duration_ms)
+        except (ValueError, TypeError):
+            pass
+
+    if sign_dur_ms is not None and sign_dur_ms > 0:
+        record_benchmark(
+            db=db,
+            benchmark_name="RSA_SIGNING",
+            duration_sec=sign_dur_ms / 1000.0,
+            sample_size_bytes=len(canonical_bytes),
+            evidence_id=evidence_record.evidence_id,
+            system_info=f"RSA-PSS client-side signature generation ({target_signer_id})",
         )
 
     record_benchmark(

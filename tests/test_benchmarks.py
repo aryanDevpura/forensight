@@ -178,3 +178,73 @@ def test_get_benchmarks_nonexistent_evidence_returns_404():
     """Querying benchmarks for unknown evidence returns 404."""
     resp = client.get("/api/benchmarks/evidence/EVD-UNKNOWN-BENCH-999")
     assert resp.status_code == 404
+
+
+def test_rsa_signing_benchmark_recording():
+    """Verify that uploading evidence with signing duration records RSA_SIGNING benchmark."""
+    sample_content = b"SIGNING_BENCHMARK_TEST_PAYLOAD_DATA"
+    upload_resp = upload_secure_evidence(
+        client,
+        sample_content,
+        filename="sign_bench_test.txt",
+        source_device="workstation-bench-02",
+        signing_duration_ms=12.3456,
+    )
+    assert upload_resp.status_code == 201
+    evd_id = upload_resp.json()["evidence_id"]
+
+    bench_resp = client.get(f"/api/benchmarks/evidence/{evd_id}")
+    assert bench_resp.status_code == 200
+    records = bench_resp.json()
+
+    sign_records = [r for r in records if r["benchmark_name"] == "RSA_SIGNING"]
+    assert len(sign_records) >= 1
+    rec = sign_records[0]
+    assert rec["evidence_id"] == evd_id
+    assert rec["duration_ms"] > 0.0
+    assert rec["sample_size_bytes"] > 0
+    assert "RSA-PSS client-side signature generation" in rec["system_info"]
+
+
+def test_benchmarks_filtering_by_name_and_size():
+    """Verify GET /api/benchmarks filtering by benchmark_name, min_size_bytes, and max_size_bytes."""
+    # List all benchmarks
+    all_resp = client.get("/api/benchmarks")
+    assert all_resp.status_code == 200
+    all_items = all_resp.json()
+
+    # Filter by benchmark_name
+    sha_resp = client.get("/api/benchmarks?benchmark_name=SHA256_HASHING")
+    assert sha_resp.status_code == 200
+    sha_items = sha_resp.json()
+    for item in sha_items:
+        assert item["benchmark_name"] == "SHA256_HASHING"
+
+    # Filter by size range
+    size_resp = client.get("/api/benchmarks?min_size_bytes=100&max_size_bytes=1000000")
+    assert size_resp.status_code == 200
+    for item in size_resp.json():
+        assert item["sample_size_bytes"] >= 100
+        assert item["sample_size_bytes"] <= 1000000
+
+
+def test_benchmarks_exclude_hmac_filter():
+    """Verify exclude_hmac query parameter excludes HMAC_VERIFICATION from list and summary."""
+    # 1. Test list with exclude_hmac=true
+    resp = client.get("/api/benchmarks?exclude_hmac=true")
+    assert resp.status_code == 200
+    items = resp.json()
+    hmac_items = [i for i in items if i["benchmark_name"] == "HMAC_VERIFICATION"]
+    assert len(hmac_items) == 0
+
+    # 2. Test summary with exclude_hmac=true
+    summary_resp = client.get("/api/benchmarks/summary?exclude_hmac=true")
+    assert summary_resp.status_code == 200
+    summary_data = summary_resp.json()
+    assert "HMAC_VERIFICATION" not in summary_data["operations"]
+
+    # 3. Standard summary without parameter still includes historical records
+    raw_summary = client.get("/api/benchmarks/summary")
+    assert raw_summary.status_code == 200
+    # Both queries succeed and total_records with exclude_hmac is <= total_records
+    assert summary_data["total_records"] <= raw_summary.json()["total_records"]

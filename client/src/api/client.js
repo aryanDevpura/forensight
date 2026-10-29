@@ -291,8 +291,19 @@ export async function fetchTimeline(evidenceId = null) {
 
 export async function fetchBenchmarks(filters = {}) {
   const params = new URLSearchParams();
-  if (filters.benchmark_name) params.append('benchmark_name', filters.benchmark_name);
+  if (filters.benchmark_name && filters.benchmark_name !== 'ALL') {
+    params.append('benchmark_name', filters.benchmark_name);
+  }
   if (filters.evidence_id) params.append('evidence_id', filters.evidence_id);
+  if (filters.min_size_bytes !== undefined && filters.min_size_bytes !== null) {
+    params.append('min_size_bytes', filters.min_size_bytes);
+  }
+  if (filters.max_size_bytes !== undefined && filters.max_size_bytes !== null) {
+    params.append('max_size_bytes', filters.max_size_bytes);
+  }
+  if (filters.exclude_hmac) {
+    params.append('exclude_hmac', 'true');
+  }
 
   const query = params.toString() ? `?${params.toString()}` : '';
   const response = await fetch(`${BASE_URL}/api/benchmarks${query}`, {
@@ -308,8 +319,13 @@ export async function fetchBenchmarks(filters = {}) {
   return await response.json();
 }
 
-export async function fetchBenchmarksSummary() {
-  const response = await fetch(`${BASE_URL}/api/benchmarks/summary`, {
+export async function fetchBenchmarksSummary(params = {}) {
+  const queryParams = new URLSearchParams();
+  if (params.exclude_hmac) {
+    queryParams.append('exclude_hmac', 'true');
+  }
+  const query = queryParams.toString() ? `?${queryParams.toString()}` : '';
+  const response = await fetch(`${BASE_URL}/api/benchmarks/summary${query}`, {
     headers: {
       'Accept': 'application/json',
     },
