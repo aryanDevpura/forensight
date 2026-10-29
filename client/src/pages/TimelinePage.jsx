@@ -31,25 +31,22 @@ export function TimelinePage() {
   const [isLoadingTimeline, setIsLoadingTimeline] = useState(false);
   const [error, setError] = useState(null);
 
-  // Load registered evidence items
+  // Load registered evidence items — only retain PCAP/PCAPNG for the timeline.
   const loadEvidence = useCallback(async () => {
     setIsLoadingEvidence(true);
     setError(null);
     try {
       const records = await fetchEvidence();
-      setEvidenceList(records);
+      // Timeline is only meaningful for PCAP/PCAPNG evidence.
+      const pcapRecords = records.filter((e) =>
+        ['PCAP', 'PCAPNG'].includes((e.evidence_type || '').toUpperCase())
+      );
+      setEvidenceList(pcapRecords);
 
-      if (records.length > 0 && !selectedEvidenceId) {
-        // Prefer defaulting to first analyzed PCAP, or first PCAP, or first item
-        const analyzedPcap = records.find(
-          (e) =>
-            ['PCAP', 'PCAPNG'].includes((e.evidence_type || '').toUpperCase()) &&
-            e.status === 'ANALYZED'
-        );
-        const anyPcap = records.find((e) =>
-          ['PCAP', 'PCAPNG'].includes((e.evidence_type || '').toUpperCase())
-        );
-        const defaultTarget = analyzedPcap || anyPcap || records[0];
+      if (pcapRecords.length > 0 && !selectedEvidenceId) {
+        // Prefer the first already-analyzed PCAP, then the first PCAP overall.
+        const analyzedPcap = pcapRecords.find((e) => e.status === 'ANALYZED');
+        const defaultTarget = analyzedPcap || pcapRecords[0];
         setSelectedEvidenceId(defaultTarget.evidence_id);
       }
     } catch (err) {
@@ -143,7 +140,7 @@ export function TimelinePage() {
                 </div>
               ) : evidenceList.length === 0 ? (
                 <div className="h-9 flex items-center px-3 bg-[#faf8f3] border border-[#d7ded4] rounded-sm text-xs text-[#536050]">
-                  No evidence records registered yet. Ingest artifacts in the Evidence Repository.
+                  No PCAP evidence registered yet. Upload a PCAP/PCAPNG file to reconstruct a forensic timeline.
                 </div>
               ) : (
                 <select
@@ -255,7 +252,7 @@ export function TimelinePage() {
                           ? selectedEvidence.status !== 'ANALYZED'
                             ? `Evidence ${selectedEvidence.evidence_id} has not been analyzed yet. Go to Forensic Analysis to inspect packets.`
                             : `No timeline events generated for ${selectedEvidence.evidence_id}.`
-                          : 'Select an evidence artifact above to inspect its forensic timeline.'}
+                          : 'Select a PCAP/PCAPNG evidence artifact above to inspect its forensic timeline.'}
                       </p>
                     </div>
                   </td>

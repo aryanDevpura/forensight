@@ -56,6 +56,10 @@ def init_db() -> None:
                     conn.execute(text("ALTER TABLE evidence ADD COLUMN signer_key_id VARCHAR(128)"))
                 if "encryption_algorithm" not in cols:
                     conn.execute(text("ALTER TABLE evidence ADD COLUMN encryption_algorithm VARCHAR(64)"))
+        # Ensure investigation_reports table is created
+        if "investigation_reports" not in table_names:
+            from server.app.models.report import InvestigationReport
+            InvestigationReport.__table__.create(bind=engine, checkfirst=True)
     except Exception:
         pass
 

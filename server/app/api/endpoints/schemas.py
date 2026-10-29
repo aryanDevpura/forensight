@@ -166,3 +166,32 @@ class BenchmarkResultRead(BenchmarkResultBase):
 
     model_config = ConfigDict(from_attributes=True)
 
+
+# Forensic Report Schemas
+class ReportGenerateRequest(BaseModel):
+    evidence_id: str
+    title: Optional[str] = None
+    examiner_name: Optional[str] = "ForenSight Forensic Examiner"
+    notes: Optional[str] = None
+    report_scope: Optional[str] = "EVIDENCE"
+
+
+class InvestigationReportRead(BaseModel):
+    id: int
+    report_id: str
+    title: str
+    report_scope: str
+    evidence_id: Optional[str] = None
+    generated_at: datetime
+    generated_by: str
+    file_size_bytes: int
+    file_path: str
+    notes: Optional[str] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class InvestigationReportDetail(InvestigationReportRead):
+    download_url: str
+    summary_data: Optional[dict] = None
+

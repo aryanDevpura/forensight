@@ -152,6 +152,76 @@ def test_timeline_isolated_between_multiple_evidence():
     assert all(e["evidence_id"] == id2 for e in t2)
 
 
+def test_timeline_non_pcap_evidence_returns_empty_list():
+    """
+    Querying the timeline for non-PCAP evidence (e.g. a .log file) must return
+    HTTP 200 with an empty list — evidence exists, it just has no forensic timeline.
+    """
+    log_data = b"2024-01-01T00:00:00Z kernel: network event logged\n" * 10
+    upload_resp = upload_secure_evidence(
+        client,
+        log_data,
+        filename="syslog.log",
+        source_device="syslog-host",
+        collector_id="collector-log-01",
+    )
+    assert upload_resp.status_code == 201, upload_resp.text
+    evidence_id = upload_resp.json()["evidence_id"]
+
+    timeline_resp = client.get(f"/api/timeline/{evidence_id}")
+    assert timeline_resp.status_code == 200, timeline_resp.text
+    assert timeline_resp.json() == [], (
+        "Non-PCAP evidence must return an empty timeline list, not events or an error"
+    )
+
+
+def test_timeline_list_excludes_non_pcap_events():
+    """
+    GET /api/timeline (no evidence_id filter) must only return events belonging
+    to PCAP/PCAPNG evidence. Events linked to non-PCAP evidence — or audit events
+    with no evidence_id — must be absent.
+    """
+    pcap_data = build_test_pcap(packet_count=2)
+    log_data = b"some log data that is not pcap\n" * 5
+
+    pcap_resp = upload_secure_evidence(
+        client, pcap_data, filename="list_filter_test.pcap"
+    )
+    log_resp = upload_secure_evidence(
+        client, log_data, filename="list_filter_test.log"
+    )
+    assert pcap_resp.status_code == 201
+    assert log_resp.status_code == 201
+
+    pcap_id = pcap_resp.json()["evidence_id"]
+    log_id = log_resp.json()["evidence_id"]
+
+    # Analyze the PCAP so events are generated
+    analysis_resp = client.post(f"/api/analysis/{pcap_id}")
+    assert analysis_resp.status_code == 200
+
+    # Fetch the global timeline list
+    all_events_resp = client.get("/api/timeline")
+    assert all_events_resp.status_code == 200
+    all_events = all_events_resp.json()
+
+    # Every returned event must belong to a PCAP, not the log file
+    log_event_ids = [ev["evidence_id"] for ev in all_events if ev.get("evidence_id") == log_id]
+    assert log_event_ids == [], (
+        f"Timeline list must exclude non-PCAP evidence events; found {log_event_ids}"
+    )
+
+    # At least the PCAP events must be present
+    pcap_event_ids = [ev["evidence_id"] for ev in all_events if ev.get("evidence_id") == pcap_id]
+    assert len(pcap_event_ids) > 0, "Timeline list must include events from PCAP evidence"
+
+    # No event should have evidence_id=None (audit-only events are excluded)
+    null_evidence_events = [ev for ev in all_events if ev.get("evidence_id") is None]
+    assert null_evidence_events == [], (
+        "Timeline list must not include audit events with no evidence_id"
+    )
+
+
 def test_timeline_idempotency_on_reanalysis():
     """Re-analyzing an evidence item should refresh events without leaking duplicates."""
     pcap_data = build_test_pcap(packet_count=3)
