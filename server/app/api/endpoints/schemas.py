@@ -99,6 +99,100 @@ class ChainOfCustodyRead(ChainOfCustodyBase):
     model_config = ConfigDict(from_attributes=True)
 
 
+# Cryptography Lab Schemas
+class CryptoLabMetadata(BaseModel):
+    evidence_id: str
+    file_name: str
+    evidence_type: str
+    file_size_bytes: int
+    sha256_hash: str
+    is_encrypted: bool
+    encryption_algorithm: Optional[str] = "AES-256-GCM"
+    signer_key_id: Optional[str] = None
+    has_rsa_signature: bool = False
+    has_wrapped_key: bool = False
+    wrapped_key_preview: Optional[str] = None
+    recorded_encryption_duration_ms: Optional[float] = None
+    recorded_encryption_throughput_mbps: Optional[float] = None
+    is_pcap: bool = False
+
+
+class CryptoLabExecutionResult(BaseModel):
+    evidence_id: str
+    file_name: str
+    evidence_type: str
+    is_encrypted: bool
+    encryption_algorithm: Optional[str] = "AES-256-GCM"
+    signer_key_id: Optional[str] = None
+    has_rsa_signature: bool = False
+    rsa_signature_valid: bool = False
+    gcm_authentication_valid: bool = False
+    integrity_status: str  # "VERIFIED_INTACT", "TAMPERED", "NOT_APPLICABLE"
+    original_size_bytes: int
+    encrypted_size_bytes: int
+    nonce_hex: Optional[str] = None
+    tag_hex: Optional[str] = None
+    wrapped_key_hex: Optional[str] = None
+    ciphertext_preview_hex: Optional[str] = None
+    ciphertext_preview_b64: Optional[str] = None
+    ciphertext_preview_bytes: int = 0
+    total_ciphertext_bytes: int = 0
+    plaintext_preview: Optional[str] = None
+    plaintext_preview_type: Optional[str] = None  # "text", "image", "binary_omitted", "unsupported"
+    encryption_duration_ms: Optional[float] = None
+    encryption_throughput_mbps: Optional[float] = None
+    decryption_duration_ms: float
+    decryption_throughput_mbps: Optional[float] = None
+    is_pcap: bool = False
+    message: str
+
+
+# SHA-256 Hashing Demonstration Schemas
+class HashMeasurement(BaseModel):
+    representation_label: str
+    sha256_digest: str
+    file_size_bytes: int
+    duration_ms: float
+    throughput_mbps: float
+    chunks_processed: int
+    is_empty_file: bool
+
+
+class EvidenceHashDemoResponse(BaseModel):
+    evidence_id: str
+    file_name: str
+    evidence_type: str
+    is_encrypted: bool
+    stored_acquisition_hash: str
+    hashes: List[HashMeasurement]
+    note: str
+
+
+class StandaloneHashResponse(BaseModel):
+    file_name: str
+    file_type: str
+    file_size_bytes: int
+    sha256_digest: str
+    duration_ms: float
+    throughput_mbps: float
+    chunks_processed: int
+    is_empty_file: bool
+
+
+class HashCompareResult(BaseModel):
+    input_a_label: str
+    input_a_size_bytes: int
+    input_a_digest: str
+    input_b_label: str
+    input_b_size_bytes: int
+    input_b_digest: str
+    digests_match: bool
+    hex_character_differences: int
+    bit_differences: int
+    avalanche_percentage: float
+    educational_note: str
+
+
 # Finding Schema Placeholders
 class FindingBase(BaseModel):
     finding_id: str

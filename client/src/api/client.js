@@ -87,6 +87,87 @@ export function getEvidenceDownloadUrl(evidenceId) {
   return `${BASE_URL}/api/evidence/${encodeURIComponent(evidenceId)}/download`;
 }
 
+export async function fetchCryptoLabMetadata(evidenceId) {
+  const response = await fetch(`${BASE_URL}/api/evidence/${encodeURIComponent(evidenceId)}/crypto-lab`, {
+    headers: {
+      'Accept': 'application/json',
+    },
+  });
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => null);
+    const message = errorData?.detail || `Failed to fetch crypto lab metadata: HTTP ${response.status}`;
+    throw new Error(message);
+  }
+  return await response.json();
+}
+
+export async function executeCryptoLabDecryption(evidenceId) {
+  const response = await fetch(`${BASE_URL}/api/evidence/${encodeURIComponent(evidenceId)}/crypto-lab/decrypt`, {
+    method: 'POST',
+    headers: {
+      'Accept': 'application/json',
+    },
+  });
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => null);
+    const message = errorData?.detail || `Cryptographic decryption failed: HTTP ${response.status}`;
+    throw new Error(message);
+  }
+  return await response.json();
+}
+
+export async function hashEvidenceDemo(evidenceId) {
+  const response = await fetch(`${BASE_URL}/api/evidence/${encodeURIComponent(evidenceId)}/crypto-lab/hash`, {
+    method: 'POST',
+    headers: {
+      'Accept': 'application/json',
+    },
+  });
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => null);
+    const message = errorData?.detail || `Evidence hashing failed: HTTP ${response.status}`;
+    throw new Error(message);
+  }
+  return await response.json();
+}
+
+export async function hashStandaloneFile(file) {
+  const formData = new FormData();
+  formData.append('file', file);
+  const response = await fetch(`${BASE_URL}/api/evidence/crypto-lab/hash-file`, {
+    method: 'POST',
+    headers: {
+      'Accept': 'application/json',
+    },
+    body: formData,
+  });
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => null);
+    const message = errorData?.detail || `File hashing failed: HTTP ${response.status}`;
+    throw new Error(message);
+  }
+  return await response.json();
+}
+
+export async function hashCompareFiles(fileA, fileB) {
+  const formData = new FormData();
+  formData.append('file_a', fileA);
+  formData.append('file_b', fileB);
+  const response = await fetch(`${BASE_URL}/api/evidence/crypto-lab/hash-compare`, {
+    method: 'POST',
+    headers: {
+      'Accept': 'application/json',
+    },
+    body: formData,
+  });
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => null);
+    const message = errorData?.detail || `Hash comparison failed: HTTP ${response.status}`;
+    throw new Error(message);
+  }
+  return await response.json();
+}
+
 export async function triggerAnalysis(evidenceId) {
   const response = await fetch(`${BASE_URL}/api/analysis/${encodeURIComponent(evidenceId)}`, {
     method: 'POST',

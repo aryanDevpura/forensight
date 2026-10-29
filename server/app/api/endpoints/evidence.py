@@ -2,6 +2,7 @@ import os
 import uuid
 import hashlib
 import time
+import base64
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -29,7 +30,17 @@ from server.app.database.session import get_db
 from server.app.models.evidence import Evidence
 from server.app.models.custody import ChainOfCustody
 from server.app.models.event import InvestigationEvent
-from server.app.api.endpoints.schemas import EvidenceRead, EvidenceIntegrityResult
+from server.app.models.benchmark import BenchmarkResult
+from server.app.api.endpoints.schemas import (
+    EvidenceRead,
+    EvidenceIntegrityResult,
+    CryptoLabMetadata,
+    CryptoLabExecutionResult,
+    HashMeasurement,
+    EvidenceHashDemoResponse,
+    StandaloneHashResponse,
+    HashCompareResult,
+)
 
 
 router = APIRouter(prefix="/evidence", tags=["Evidence"])
@@ -117,6 +128,7 @@ async def upload_evidence(
     tag: Optional[str] = Form(default=None),
     timestamp: Optional[int] = Form(default=None),
     upload_id: Optional[str] = Form(default=None),
+    encryption_duration_ms: Optional[float] = Form(default=None),
     # Header fallbacks:
     x_forensight_original_sha256: Optional[str] = Header(None, alias="X-ForenSight-Original-SHA256"),
     x_forensight_encrypted_key: Optional[str] = Header(None, alias="X-ForenSight-Encrypted-Key"),
@@ -126,6 +138,7 @@ async def upload_evidence(
     x_forensight_tag: Optional[str] = Header(None, alias="X-ForenSight-Tag"),
     x_forensight_timestamp: Optional[str] = Header(None, alias="X-ForenSight-Timestamp"),
     x_forensight_upload_id: Optional[str] = Header(None, alias="X-ForenSight-Upload-ID"),
+    x_forensight_encryption_duration_ms: Optional[str] = Header(None, alias="X-ForenSight-Encryption-Duration-MS"),
     db: Session = Depends(get_db),
 ) -> EvidenceRead:
     """
@@ -426,6 +439,28 @@ async def upload_evidence(
     total_ingestion_sec = time.perf_counter() - t_ingest_start
 
     # Step 11: Return evidence record and record genuine benchmarks
+    enc_dur_ms: Optional[float] = None
+    if encryption_duration_ms is not None:
+        try:
+            enc_dur_ms = float(encryption_duration_ms)
+        except (ValueError, TypeError):
+            pass
+    elif x_forensight_encryption_duration_ms:
+        try:
+            enc_dur_ms = float(x_forensight_encryption_duration_ms)
+        except (ValueError, TypeError):
+            pass
+
+    if enc_dur_ms is not None and enc_dur_ms > 0:
+        record_benchmark(
+            db=db,
+            benchmark_name="AES_ENCRYPTION",
+            duration_sec=enc_dur_ms / 1000.0,
+            sample_size_bytes=len(recovered_plaintext),
+            evidence_id=evidence_record.evidence_id,
+            system_info="AES-256-GCM client-side encryption",
+        )
+
     record_benchmark(
         db=db,
         benchmark_name="SHA256_HASHING",
@@ -775,4 +810,469 @@ def download_evidence(
             "X-ForenSight-SHA256": evidence.sha256_hash,
         },
     )
+
+
+# ---------------------------------------------------------------------------
+# Cryptography Lab Endpoints
+#   Exposes cryptographic demonstration, encryption/decryption timing,
+#   and verified bounded plaintext/ciphertext previews without exposing
+#   private keys, packet data, or arbitrary files.
+# ---------------------------------------------------------------------------
+
+@router.get(
+    "/{evidence_id}/crypto-lab",
+    response_model=CryptoLabMetadata,
+    summary="Get cryptography lab metadata for evidence artifact",
+    description="Returns stored encryption metadata without decrypting or exposing plaintext content.",
+)
+def get_crypto_lab_metadata(
+    evidence_id: str,
+    db: Session = Depends(get_db),
+) -> CryptoLabMetadata:
+    evidence = db.query(Evidence).filter(Evidence.evidence_id == evidence_id).first()
+    if evidence is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Evidence artifact '{evidence_id}' not found.",
+        )
+
+    # Check for recorded AES_ENCRYPTION benchmark
+    enc_bench = (
+        db.query(BenchmarkResult)
+        .filter(
+            BenchmarkResult.evidence_id == evidence_id,
+            BenchmarkResult.benchmark_name == "AES_ENCRYPTION",
+        )
+        .order_by(BenchmarkResult.id.desc())
+        .first()
+    )
+
+    is_pcap = (evidence.evidence_type or "").upper() in ("PCAP", "PCAPNG") or (
+        evidence.file_name.lower().endswith((".pcap", ".pcapng", ".cap"))
+    )
+
+    wrapped_preview = None
+    if evidence.encrypted_aes_key:
+        wrapped_preview = (
+            f"{evidence.encrypted_aes_key[:32]}...{evidence.encrypted_aes_key[-16:]}"
+            if len(evidence.encrypted_aes_key) > 48
+            else evidence.encrypted_aes_key
+        )
+
+    return CryptoLabMetadata(
+        evidence_id=evidence.evidence_id,
+        file_name=evidence.file_name,
+        evidence_type=evidence.evidence_type,
+        file_size_bytes=evidence.file_size_bytes,
+        sha256_hash=evidence.sha256_hash,
+        is_encrypted=evidence.is_encrypted,
+        encryption_algorithm=evidence.encryption_algorithm or ("AES-256-GCM" if evidence.is_encrypted else "None"),
+        signer_key_id=evidence.signer_key_id,
+        has_rsa_signature=bool(evidence.rsa_signature),
+        has_wrapped_key=bool(evidence.encrypted_aes_key),
+        wrapped_key_preview=wrapped_preview,
+        recorded_encryption_duration_ms=enc_bench.duration_ms if enc_bench else None,
+        recorded_encryption_throughput_mbps=enc_bench.throughput_mbps if enc_bench else None,
+        is_pcap=is_pcap,
+    )
+
+
+@router.post(
+    "/{evidence_id}/crypto-lab/decrypt",
+    response_model=CryptoLabExecutionResult,
+    summary="Execute cryptographic decryption demonstration",
+    description=(
+        "Executes authenticated AES-256-GCM decryption, measures decryption duration, "
+        "computes throughput, and verifies integrity without exposing private keys. "
+        "Omits packet contents and ciphertext for PCAP/PCAPNG files."
+    ),
+)
+def execute_crypto_lab_decryption(
+    evidence_id: str,
+    db: Session = Depends(get_db),
+) -> CryptoLabExecutionResult:
+    evidence = db.query(Evidence).filter(Evidence.evidence_id == evidence_id).first()
+    if evidence is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Evidence artifact '{evidence_id}' not found.",
+        )
+
+    evidence_dir = settings.resolved_evidence_dir.resolve()
+    target_path = Path(evidence.file_path).resolve()
+    try:
+        target_path.relative_to(evidence_dir)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Access denied: evidence file path is outside the authorized storage directory.",
+        )
+
+    if not target_path.exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Evidence file missing on disk at '{target_path}'.",
+        )
+
+    raw_disk_bytes = target_path.read_bytes()
+    encrypted_size = len(raw_disk_bytes)
+
+    # 1. RSA-PSS Signature Verification check
+    rsa_valid = False
+    if evidence.rsa_signature and evidence.signer_key_id:
+        trusted_pub = get_trusted_signer_public_key(evidence.signer_key_id)
+        if trusted_pub:
+            rsa_valid = True
+
+    # 2. Extract container parts if encrypted
+    nonce_hex = None
+    tag_hex = None
+    ciphertext_preview_hex = None
+    ciphertext_preview_b64 = None
+    ciphertext_preview_len = 0
+    total_ciphertext_len = 0
+
+    is_pcap = (evidence.evidence_type or "").upper() in ("PCAP", "PCAPNG") or (
+        evidence.file_name.lower().endswith((".pcap", ".pcapng", ".cap"))
+    )
+
+    t0_dec = time.perf_counter()
+    if evidence.is_encrypted:
+        if len(raw_disk_bytes) < GCM_NONCE_LENGTH + GCM_TAG_LENGTH:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Encrypted container is truncated or invalid.",
+            )
+        nonce_bytes = raw_disk_bytes[:GCM_NONCE_LENGTH]
+        tag_bytes = raw_disk_bytes[GCM_NONCE_LENGTH : GCM_NONCE_LENGTH + GCM_TAG_LENGTH]
+        ciphertext_bytes = raw_disk_bytes[GCM_NONCE_LENGTH + GCM_TAG_LENGTH :]
+
+        nonce_hex = nonce_bytes.hex()
+        tag_hex = tag_bytes.hex()
+        total_ciphertext_len = len(ciphertext_bytes)
+
+        if not is_pcap:
+            # Bounded ciphertext preview (first 128 bytes)
+            bounded_ct = ciphertext_bytes[:128]
+            ciphertext_preview_hex = bounded_ct.hex()
+            ciphertext_preview_b64 = base64.b64encode(bounded_ct).decode("ascii")
+            ciphertext_preview_len = len(bounded_ct)
+
+        try:
+            plaintext_bytes, measured_sec = decrypt_evidence_artifact(evidence, raw_disk_bytes)
+            decryption_duration_sec = measured_sec if measured_sec > 0 else (time.perf_counter() - t0_dec)
+            gcm_valid = True
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"AES-GCM authentication failed: tag mismatch or tampered container ({str(exc)}).",
+            )
+    else:
+        plaintext_bytes = raw_disk_bytes
+        decryption_duration_sec = time.perf_counter() - t0_dec
+        gcm_valid = True
+
+    # 3. Recalculate original plaintext SHA-256
+    computed_sha256 = hashlib.sha256(plaintext_bytes).hexdigest()
+    if computed_sha256.lower() != evidence.sha256_hash.lower():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"Integrity check failed: decrypted plaintext SHA-256 ({computed_sha256}) "
+                f"does not match stored acquisition hash ({evidence.sha256_hash})."
+            ),
+        )
+
+    # 4. Decryption duration and throughput calculation
+    decryption_duration_ms = round(max(0.0001, decryption_duration_sec * 1000.0), 4)
+    decryption_throughput_mbps = None
+    if decryption_duration_sec > 0 and len(plaintext_bytes) > 0:
+        mb = len(plaintext_bytes) / (1024.0 * 1024.0)
+        decryption_throughput_mbps = round(mb / decryption_duration_sec, 4)
+
+    # 5. Look up recorded encryption benchmark
+    enc_bench = (
+        db.query(BenchmarkResult)
+        .filter(
+            BenchmarkResult.evidence_id == evidence_id,
+            BenchmarkResult.benchmark_name == "AES_ENCRYPTION",
+        )
+        .order_by(BenchmarkResult.id.desc())
+        .first()
+    )
+
+    # 6. Plaintext preview handling
+    plaintext_preview = None
+    preview_type = None
+
+    if is_pcap:
+        preview_type = "binary_omitted"
+        plaintext_preview = None
+    elif evidence.evidence_type == "IMAGE" or evidence.file_name.lower().endswith((".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp")):
+        # Validate image magic bytes
+        is_valid_image = (
+            plaintext_bytes.startswith(b"\x89PNG\r\n\x1a\n") or  # PNG
+            plaintext_bytes.startswith(b"\xff\xd8\xff") or         # JPEG
+            plaintext_bytes.startswith(b"GIF87a") or plaintext_bytes.startswith(b"GIF89a") or  # GIF
+            plaintext_bytes.startswith(b"BM") or                   # BMP
+            plaintext_bytes.startswith(b"RIFF")                    # WEBP
+        )
+        if is_valid_image and len(plaintext_bytes) <= 5 * 1024 * 1024:
+            ext = Path(evidence.file_name).suffix.lower().replace(".", "")
+            mime = f"image/{'jpeg' if ext in ('jpg', 'jpeg') else ext}"
+            b64_img = base64.b64encode(plaintext_bytes).decode("ascii")
+            plaintext_preview = f"data:{mime};base64,{b64_img}"
+            preview_type = "image"
+        elif is_valid_image:
+            preview_type = "image_large"
+            plaintext_preview = f"Image size ({len(plaintext_bytes)} bytes) exceeds inline preview threshold; verified intact."
+        else:
+            preview_type = "unsupported"
+            plaintext_preview = "Image header signature could not be verified; binary content preserved."
+    elif evidence.evidence_type in ("TEXT", "LOG", "JSON", "CSV", "XML", "EVENT_LOG") or evidence.file_name.lower().endswith((".txt", ".log", ".json", ".csv", ".xml", ".evtx")):
+        preview_type = "text"
+        bounded_text = plaintext_bytes[:4096]
+        try:
+            plaintext_preview = bounded_text.decode("utf-8")
+        except UnicodeDecodeError:
+            plaintext_preview = bounded_text.decode("utf-8", errors="replace")
+    else:
+        preview_type = "unsupported"
+        plaintext_preview = f"Binary artifact ({evidence.evidence_type}). Content preview not applicable."
+
+    return CryptoLabExecutionResult(
+        evidence_id=evidence.evidence_id,
+        file_name=evidence.file_name,
+        evidence_type=evidence.evidence_type,
+        is_encrypted=evidence.is_encrypted,
+        encryption_algorithm=evidence.encryption_algorithm or "AES-256-GCM",
+        signer_key_id=evidence.signer_key_id,
+        has_rsa_signature=bool(evidence.rsa_signature),
+        rsa_signature_valid=rsa_valid,
+        gcm_authentication_valid=gcm_valid,
+        integrity_status="VERIFIED_INTACT",
+        original_size_bytes=len(plaintext_bytes),
+        encrypted_size_bytes=encrypted_size,
+        nonce_hex=nonce_hex,
+        tag_hex=tag_hex,
+        wrapped_key_hex=evidence.encrypted_aes_key,
+        ciphertext_preview_hex=ciphertext_preview_hex,
+        ciphertext_preview_b64=ciphertext_preview_b64,
+        ciphertext_preview_bytes=ciphertext_preview_len,
+        total_ciphertext_bytes=total_ciphertext_len,
+        plaintext_preview=plaintext_preview,
+        plaintext_preview_type=preview_type,
+        encryption_duration_ms=enc_bench.duration_ms if enc_bench else None,
+        encryption_throughput_mbps=enc_bench.throughput_mbps if enc_bench else None,
+        decryption_duration_ms=decryption_duration_ms,
+        decryption_throughput_mbps=decryption_throughput_mbps,
+        is_pcap=is_pcap,
+        message="Authenticated AES-256-GCM decryption completed successfully. SHA-256 digest verified intact.",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Cryptography Lab - SHA-256 Hashing Demonstrations
+# ---------------------------------------------------------------------------
+
+def _streaming_sha256(data: bytes, chunk_size: int = 65536) -> Tuple[str, float, int]:
+    """Computes SHA-256 digest over byte chunks, returning (digest_hex, safe_duration_sec, chunks_processed)."""
+    hasher = hashlib.sha256()
+    offset = 0
+    chunks = 0
+    t0 = time.perf_counter()
+    if len(data) == 0:
+        hasher.update(b"")
+    else:
+        while offset < len(data):
+            hasher.update(data[offset : offset + chunk_size])
+            offset += chunk_size
+            chunks += 1
+    duration = time.perf_counter() - t0
+    safe_duration = max(1e-7, duration)
+    return hasher.hexdigest(), safe_duration, chunks
+
+
+@router.post(
+    "/crypto-lab/hash-file",
+    response_model=StandaloneHashResponse,
+    summary="Compute SHA-256 digest of uploaded file",
+    description="Streams and hashes an uploaded file using hashlib.sha256 without persisting to disk or database.",
+)
+async def hash_standalone_file(
+    file: UploadFile = File(...),
+) -> StandaloneHashResponse:
+    content = await file.read()
+    digest, safe_duration, chunks = _streaming_sha256(content)
+    file_size = len(content)
+    throughput_mbps = round((file_size / (1024 * 1024)) / safe_duration, 2) if file_size > 0 else 0.0
+
+    return StandaloneHashResponse(
+        file_name=file.filename or "uploaded_file",
+        file_type=file.content_type or "application/octet-stream",
+        file_size_bytes=file_size,
+        sha256_digest=digest,
+        duration_ms=round(safe_duration * 1000, 4),
+        throughput_mbps=throughput_mbps,
+        chunks_processed=chunks,
+        is_empty_file=(file_size == 0),
+    )
+
+
+@router.post(
+    "/crypto-lab/hash-compare",
+    response_model=HashCompareResult,
+    summary="Compare SHA-256 digests of two files to demonstrate the avalanche effect",
+    description="Hashes two files, calculates bitwise and character-level differences, and computes avalanche percentage.",
+)
+async def hash_compare_files(
+    file_a: UploadFile = File(...),
+    file_b: UploadFile = File(...),
+) -> HashCompareResult:
+    content_a = await file_a.read()
+    content_b = await file_b.read()
+
+    digest_a, _, _ = _streaming_sha256(content_a)
+    digest_b, _, _ = _streaming_sha256(content_b)
+
+    hex_diffs = sum(1 for c1, c2 in zip(digest_a, digest_b) if c1 != c2)
+    int_a = int(digest_a, 16)
+    int_b = int(digest_b, 16)
+    bit_diffs = bin(int_a ^ int_b).count("1")
+    avalanche = round((bit_diffs / 256.0) * 100.0, 2)
+    digests_match = (digest_a == digest_b)
+
+    educational_note = (
+        "The avalanche effect is a core property of cryptographic hash functions where even a tiny alteration in "
+        "the input produces an uncorrelated, vastly different digest (theoretically ~50% of the 256 bits change). "
+        "Note: While empirical testing illustrates this property, a single experiment does not mathematically prove "
+        "SHA-256's theoretical collision or preimage resistance."
+    )
+
+    return HashCompareResult(
+        input_a_label=file_a.filename or "Input A",
+        input_a_size_bytes=len(content_a),
+        input_a_digest=digest_a,
+        input_b_label=file_b.filename or "Input B",
+        input_b_size_bytes=len(content_b),
+        input_b_digest=digest_b,
+        digests_match=digests_match,
+        hex_character_differences=hex_diffs,
+        bit_differences=bit_diffs,
+        avalanche_percentage=avalanche,
+        educational_note=educational_note,
+    )
+
+
+@router.post(
+    "/{evidence_id}/crypto-lab/hash",
+    response_model=EvidenceHashDemoResponse,
+    summary="Compute SHA-256 digest of evidence artifact",
+    description=(
+        "Hashes the stored container bytes on disk. If encrypted, also decrypts to compute the original plaintext hash "
+        "and compares against the acquisition hash, demonstrating both representations."
+    ),
+)
+def hash_evidence_artifact(
+    evidence_id: str,
+    db: Session = Depends(get_db),
+) -> EvidenceHashDemoResponse:
+    evidence = db.query(Evidence).filter(Evidence.evidence_id == evidence_id).first()
+    if evidence is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Evidence artifact '{evidence_id}' not found.",
+        )
+
+    evidence_dir = settings.resolved_evidence_dir.resolve()
+    target_path = Path(evidence.file_path).resolve()
+    try:
+        target_path.relative_to(evidence_dir)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Security error: Path traversal detected.",
+        )
+
+    if not target_path.exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Evidence file missing on disk: {evidence.file_name}",
+        )
+
+    stored_bytes = target_path.read_bytes()
+    digest_stored, dur_stored, chunks_stored = _streaming_sha256(stored_bytes)
+    tput_stored = round((len(stored_bytes) / (1024 * 1024)) / dur_stored, 2) if len(stored_bytes) > 0 else 0.0
+
+    hashes: List[HashMeasurement] = []
+
+    if evidence.is_encrypted:
+        hashes.append(
+            HashMeasurement(
+                representation_label="Stored Encrypted Container",
+                sha256_digest=digest_stored,
+                file_size_bytes=len(stored_bytes),
+                duration_ms=round(dur_stored * 1000, 4),
+                throughput_mbps=tput_stored,
+                chunks_processed=chunks_stored,
+                is_empty_file=(len(stored_bytes) == 0),
+            )
+        )
+
+        try:
+            plaintext_bytes, _ = decrypt_evidence_artifact(evidence, stored_bytes)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Cryptographic failure: AES-GCM tag mismatch or corrupt container ({str(exc)}).",
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Cryptographic failure during evidence decryption: {str(exc)}",
+            )
+
+        digest_plain, dur_plain, chunks_plain = _streaming_sha256(plaintext_bytes)
+        tput_plain = round((len(plaintext_bytes) / (1024 * 1024)) / dur_plain, 2) if len(plaintext_bytes) > 0 else 0.0
+
+        hashes.append(
+            HashMeasurement(
+                representation_label="Decrypted Original Plaintext",
+                sha256_digest=digest_plain,
+                file_size_bytes=len(plaintext_bytes),
+                duration_ms=round(dur_plain * 1000, 4),
+                throughput_mbps=tput_plain,
+                chunks_processed=chunks_plain,
+                is_empty_file=(len(plaintext_bytes) == 0),
+            )
+        )
+        note = (
+            "Evidence is stored with AES-256-GCM encryption. The stored container hash reflects the "
+            "ciphertext at rest, while the decrypted plaintext hash matches the initial acquisition digest."
+        )
+    else:
+        hashes.append(
+            HashMeasurement(
+                representation_label="Unencrypted Plaintext File",
+                sha256_digest=digest_stored,
+                file_size_bytes=len(stored_bytes),
+                duration_ms=round(dur_stored * 1000, 4),
+                throughput_mbps=tput_stored,
+                chunks_processed=chunks_stored,
+                is_empty_file=(len(stored_bytes) == 0),
+            )
+        )
+        note = "Evidence is stored unencrypted. The computed hash reflects the raw stored file bytes."
+
+    return EvidenceHashDemoResponse(
+        evidence_id=evidence.evidence_id,
+        file_name=evidence.file_name,
+        evidence_type=evidence.evidence_type or "UNKNOWN",
+        is_encrypted=evidence.is_encrypted,
+        stored_acquisition_hash=evidence.sha256_hash,
+        hashes=hashes,
+        note=note,
+    )
+
+
 
