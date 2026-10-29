@@ -22,6 +22,7 @@ from fastapi.testclient import TestClient
 
 from server.app.main import app
 from server.app.database.session import init_db
+from tests.crypto_test_utils import upload_secure_evidence
 
 init_db()
 client = TestClient(app)
@@ -82,10 +83,12 @@ def test_analyze_with_sample_network_trace_pcap():
     expected_sha256 = hashlib.sha256(file_bytes).hexdigest()
 
     # 1. Upload the sample file
-    upload_resp = client.post(
-        "/api/evidence",
-        files={"file": ("sample_network_trace.pcap", io.BytesIO(file_bytes), "application/octet-stream")},
-        data={"source_device": "workstation-lab-01", "collector_id": "collector-agent-01"},
+    upload_resp = upload_secure_evidence(
+        client,
+        file_bytes,
+        filename="sample_network_trace.pcap",
+        source_device="workstation-lab-01",
+        collector_id="collector-agent-01",
     )
     assert upload_resp.status_code == 201
     evd_data = upload_resp.json()
@@ -145,10 +148,11 @@ def test_analyze_binary_valid_pcap_extracts_metadata():
     pcap_data = build_binary_pcap(packet_count=6, has_scan=False, has_cleartext=False)
     pcap_sha256 = hashlib.sha256(pcap_data).hexdigest()
 
-    upload_resp = client.post(
-        "/api/evidence",
-        files={"file": ("valid_traffic.pcap", io.BytesIO(pcap_data), "application/octet-stream")},
-        data={"source_device": "network-tap-01"},
+    upload_resp = upload_secure_evidence(
+        client,
+        pcap_data,
+        filename="valid_traffic.pcap",
+        source_device="network-tap-01",
     )
     assert upload_resp.status_code == 201
     evd = upload_resp.json()
@@ -176,10 +180,11 @@ def test_analyze_pcap_detects_port_scan_heuristic():
     """Test heuristic detection of vertical/horizontal port scan."""
     scan_pcap = build_binary_pcap(packet_count=12, has_scan=True, has_cleartext=False)
 
-    upload_resp = client.post(
-        "/api/evidence",
-        files={"file": ("port_scan_test.pcap", io.BytesIO(scan_pcap), "application/octet-stream")},
-        data={"source_device": "dmz-honeypot"},
+    upload_resp = upload_secure_evidence(
+        client,
+        scan_pcap,
+        filename="port_scan_test.pcap",
+        source_device="dmz-honeypot",
     )
     assert upload_resp.status_code == 201
     evidence_id = upload_resp.json()["evidence_id"]
@@ -198,9 +203,10 @@ def test_analyze_pcap_detects_cleartext_protocols():
     """Test heuristic detection of unencrypted cleartext protocols."""
     cleartext_pcap = build_binary_pcap(packet_count=3, has_scan=False, has_cleartext=True)
 
-    upload_resp = client.post(
-        "/api/evidence",
-        files={"file": ("cleartext_traffic.pcap", io.BytesIO(cleartext_pcap), "application/octet-stream")},
+    upload_resp = upload_secure_evidence(
+        client,
+        cleartext_pcap,
+        filename="cleartext_traffic.pcap",
     )
     assert upload_resp.status_code == 201
     evidence_id = upload_resp.json()["evidence_id"]
@@ -217,9 +223,10 @@ def test_analyze_pcap_detects_cleartext_protocols():
 def test_analyze_custody_event_logged():
     """Verify that analyzing evidence logs an ANALYZED event in chain of custody."""
     pcap_data = build_binary_pcap(packet_count=2)
-    upload_resp = client.post(
-        "/api/evidence",
-        files={"file": ("custody_flow.pcap", io.BytesIO(pcap_data), "application/octet-stream")},
+    upload_resp = upload_secure_evidence(
+        client,
+        pcap_data,
+        filename="custody_flow.pcap",
     )
     evidence_id = upload_resp.json()["evidence_id"]
 
@@ -242,9 +249,10 @@ def test_analyze_nonexistent_evidence_returns_404():
 def test_analyze_unsupported_evidence_type_returns_400():
     """Analysis of non-PCAP evidence returns 400."""
     log_content = b"2026-10-08 00:00:00 systemd[1]: Started Service."
-    upload_resp = client.post(
-        "/api/evidence",
-        files={"file": ("system.log", io.BytesIO(log_content), "text/plain")},
+    upload_resp = upload_secure_evidence(
+        client,
+        log_content,
+        filename="system.log",
     )
     assert upload_resp.status_code == 201
     evidence_id = upload_resp.json()["evidence_id"]
@@ -292,9 +300,10 @@ def test_cleartext_port_heuristic_fires_without_dissector():
     # build_binary_pcap with has_cleartext=True writes dst_port=80 packets
     pcap = build_binary_pcap(packet_count=2, has_cleartext=True)
 
-    upload_resp = client.post(
-        "/api/evidence",
-        files={"file": ("cleartext_heuristic.pcap", io.BytesIO(pcap), "application/octet-stream")},
+    upload_resp = upload_secure_evidence(
+        client,
+        pcap,
+        filename="cleartext_heuristic.pcap",
     )
     assert upload_resp.status_code == 201
     evidence_id = upload_resp.json()["evidence_id"]
@@ -318,9 +327,10 @@ def test_cleartext_dissector_confirmed_http(monkeypatch):
 
     # Upload a dummy PCAP so we have a valid evidence record
     pcap = build_binary_pcap(packet_count=1, has_cleartext=True)
-    upload_resp = client.post(
-        "/api/evidence",
-        files={"file": ("http_confirmed.pcap", io.BytesIO(pcap), "application/octet-stream")},
+    upload_resp = upload_secure_evidence(
+        client,
+        pcap,
+        filename="http_confirmed.pcap",
     )
     assert upload_resp.status_code == 201
     evidence_id = upload_resp.json()["evidence_id"]
@@ -360,9 +370,10 @@ def test_cleartext_dissector_denies_tls_on_port_80(monkeypatch):
     from server.app.services.pcap_parser import PcapAnalysisResult, PacketMetadata
 
     pcap = build_binary_pcap(packet_count=1)
-    upload_resp = client.post(
-        "/api/evidence",
-        files={"file": ("tls_on_80.pcap", io.BytesIO(pcap), "application/octet-stream")},
+    upload_resp = upload_secure_evidence(
+        client,
+        pcap,
+        filename="tls_on_80.pcap",
     )
     assert upload_resp.status_code == 201
     evidence_id = upload_resp.json()["evidence_id"]

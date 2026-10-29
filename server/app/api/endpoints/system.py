@@ -7,7 +7,12 @@ from server.app.models.event import InvestigationEvent
 from server.app.models.custody import ChainOfCustody
 from server.app.models.benchmark import BenchmarkResult
 from server.app.core.config import settings
-from server.app.api.endpoints.schemas import SystemStatsResponse
+from server.app.api.endpoints.schemas import SystemStatsResponse, PublicKeyResponse
+from server.app.core.rsa_crypto import (
+    get_server_public_key_pem,
+    DEFAULT_SIGNER_ID,
+    get_client_demo_private_key_pem,
+)
 
 router = APIRouter()
 
@@ -33,3 +38,26 @@ def get_system_stats(db: Session = Depends(get_db)) -> SystemStatsResponse:
         database_file=settings.DATABASE_URL,
         collector_status="Configured (Standby for telemetry)",
     )
+
+
+@router.get("/system/public-keys", response_model=PublicKeyResponse, tags=["System", "Cryptography"])
+def get_public_keys() -> PublicKeyResponse:
+    """
+    Returns the server's RSA-OAEP public key used for wrapping evidence AES keys,
+    along with trusted signer details.
+    """
+    demo_key = None
+    if settings.FORENSIGHT_ENV == "development" or settings.FORENSIGHT_DEBUG:
+        try:
+            demo_key = get_client_demo_private_key_pem()
+        except Exception:
+            pass
+
+    return PublicKeyResponse(
+        server_public_key=get_server_public_key_pem(),
+        key_algorithm="RSA-OAEP",
+        hash_algorithm="SHA-256",
+        trusted_signer_id=DEFAULT_SIGNER_ID,
+        demo_client_private_key=demo_key,
+    )
+

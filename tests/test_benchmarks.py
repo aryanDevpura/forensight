@@ -25,6 +25,7 @@ from fastapi.testclient import TestClient
 from server.app.main import app
 from server.app.database.session import init_db
 from collector.auth import sign_request, sign_request_with_metrics, compute_payload_hash
+from tests.crypto_test_utils import upload_secure_evidence
 
 init_db()
 client = TestClient(app)
@@ -54,12 +55,13 @@ def build_valid_pcap(packet_count: int = 5) -> bytes:
 
 
 def test_evidence_ingestion_and_hashing_benchmarks_recorded():
-    """Verify that uploading evidence records SHA256_HASHING and EVIDENCE_INGESTION benchmarks."""
+    """Verify that uploading evidence records SHA256_HASHING, EVIDENCE_INGESTION, RSA_VERIFICATION, and AES_DECRYPTION benchmarks."""
     sample_content = b"EVIDENCE_DATA_STREAM_BENCHMARK_TEST_PAYLOAD_" * 1000  # ~45 KB
-    upload_resp = client.post(
-        "/api/evidence",
-        files={"file": ("bench_test.log", io.BytesIO(sample_content), "application/octet-stream")},
-        data={"source_device": "bench-station-01"},
+    upload_resp = upload_secure_evidence(
+        client,
+        sample_content,
+        filename="bench_test.log",
+        source_device="bench-station-01",
     )
     assert upload_resp.status_code == 201
     evd_id = upload_resp.json()["evidence_id"]
@@ -72,50 +74,42 @@ def test_evidence_ingestion_and_hashing_benchmarks_recorded():
     bench_names = [r["benchmark_name"] for r in records]
     assert "SHA256_HASHING" in bench_names
     assert "EVIDENCE_INGESTION" in bench_names
+    assert "RSA_VERIFICATION" in bench_names
+    assert "AES_DECRYPTION" in bench_names
 
     for r in records:
         assert r["evidence_id"] == evd_id
-        assert r["sample_size_bytes"] == len(sample_content)
         assert r["duration_ms"] > 0.0
         assert r["throughput_mbps"] is not None
         assert r["throughput_mbps"] > 0.0
+        if r["benchmark_name"] in ("SHA256_HASHING", "AES_DECRYPTION"):
+            assert r["sample_size_bytes"] == len(sample_content)
+        elif r["benchmark_name"] == "EVIDENCE_INGESTION":
+            assert r["sample_size_bytes"] >= len(sample_content)
+        elif r["benchmark_name"] == "RSA_VERIFICATION":
+            assert r["sample_size_bytes"] > 0
 
 
-def test_authenticated_upload_records_hmac_verification_benchmark(monkeypatch):
-    """Verify that HMAC verification execution time is measured and recorded as a benchmark."""
-    monkeypatch.setenv("FORENSIGHT_HMAC_SECRET", TEST_HMAC_SECRET)
-    from server.app.core.config import settings
-    monkeypatch.setattr(settings, "FORENSIGHT_HMAC_SECRET", TEST_HMAC_SECRET)
-
+def test_secure_upload_records_rsa_verification_benchmark():
+    """Verify that RSA signature verification execution time is measured and recorded as a benchmark."""
     payload = b"AUTHENTICATED_UPLOAD_BENCHMARK_PAYLOAD_TEST_DATA"
-    payload_hash = compute_payload_hash(payload)
-    evidence_id = "EVD-HMAC-BENCH-001"
-    ts = int(time.time())
-
-    headers = sign_request(
-        secret=TEST_HMAC_SECRET,
-        evidence_id=evidence_id,
-        payload_hash=payload_hash,
-        timestamp=ts,
-    )
-
-    upload_resp = client.post(
-        "/api/evidence/authenticated",
-        files={"file": ("auth_bench.log", io.BytesIO(payload), "application/octet-stream")},
-        data={"source_device": "collector-agent-01"},
-        headers=headers,
+    upload_resp = upload_secure_evidence(
+        client,
+        payload,
+        filename="auth_bench.log",
+        source_device="collector-agent-01",
     )
     assert upload_resp.status_code == 201
     actual_evd_id = upload_resp.json()["evidence_id"]
 
-    # Verify HMAC_VERIFICATION benchmark recorded
+    # Verify RSA_VERIFICATION benchmark recorded
     bench_resp = client.get(f"/api/benchmarks/evidence/{actual_evd_id}")
     assert bench_resp.status_code == 200
     records = bench_resp.json()
 
-    hmac_records = [r for r in records if r["benchmark_name"] == "HMAC_VERIFICATION"]
-    assert len(hmac_records) >= 1
-    rec = hmac_records[0]
+    rsa_records = [r for r in records if r["benchmark_name"] == "RSA_VERIFICATION"]
+    assert len(rsa_records) >= 1
+    rec = rsa_records[0]
     assert rec["evidence_id"] == actual_evd_id
     assert rec["duration_ms"] > 0.0
 
@@ -123,9 +117,10 @@ def test_authenticated_upload_records_hmac_verification_benchmark(monkeypatch):
 def test_pcap_analysis_records_benchmark():
     """Verify that running PCAP forensic analysis measures and records PCAP_ANALYSIS benchmark."""
     pcap_data = build_valid_pcap(packet_count=6)
-    upload_resp = client.post(
-        "/api/evidence",
-        files={"file": ("analysis_bench.pcap", io.BytesIO(pcap_data), "application/octet-stream")},
+    upload_resp = upload_secure_evidence(
+        client,
+        pcap_data,
+        filename="analysis_bench.pcap",
     )
     assert upload_resp.status_code == 201
     evd_id = upload_resp.json()["evidence_id"]

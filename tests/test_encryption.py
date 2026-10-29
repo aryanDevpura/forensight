@@ -38,6 +38,7 @@ from server.app.core.crypto import encrypt_payload, decrypt_payload, parse_encry
 from collector.auth import sign_request, compute_payload_hash
 from collector.collector import EvidenceCollector
 from collector.config import CollectorConfig
+from tests.crypto_test_utils import upload_secure_evidence
 
 init_db()
 client = TestClient(app)
@@ -89,46 +90,25 @@ def test_crypto_nonce_uniqueness_and_roundtrip():
     assert dec2 == SAMPLE_PCAP_BYTES
 
 
-def test_successful_encrypted_transfer_and_recovered_artifact_storage(monkeypatch, tmp_path):
+def test_successful_encrypted_transfer_and_recovered_artifact_storage(tmp_path):
     """
-    Test Collector -> Server end-to-end encrypted transfer:
-      1. Collector encrypts artifact with AES-256-GCM
-      2. Server authenticates HMAC
-      3. Server decrypts evidence
+    Test Unified Secure Transfer:
+      1. Client encrypts artifact with AES-256-GCM and wraps AES key with RSA-OAEP
+      2. Server authenticates RSA-PSS signature
+      3. Server decrypts AES key and evidence payload
       4. Server verifies SHA-256 of recovered bytes
-      5. Stored disk file matches original unencrypted bytes byte-for-byte
+      5. Stored disk file is AES-256-GCM encrypted at rest
       6. AES_DECRYPTION benchmark is recorded
     """
-    from server.app.core.config import settings
-    monkeypatch.setattr(settings, "FORENSIGHT_HMAC_SECRET", TEST_HMAC_SECRET)
-    monkeypatch.setattr(settings, "FORENSIGHT_ENCRYPTION_KEY", TEST_ENCRYPTION_KEY)
-
     test_artifact = tmp_path / "transfer_test.pcap"
     test_artifact.write_bytes(SAMPLE_PCAP_BYTES)
 
-    # Encrypt payload on collector side
-    encrypted_pkg, enc_sec = encrypt_payload(
+    resp = upload_secure_evidence(
+        client,
         SAMPLE_PCAP_BYTES,
-        TEST_ENCRYPTION_KEY,
-        associated_data=SAMPLE_HASH.encode("utf-8"),
-    )
-    assert len(encrypted_pkg) > len(SAMPLE_PCAP_BYTES)
-
-    # Build HMAC headers over original SHA-256
-    ts = int(time.time())
-    auth_headers = sign_request(
-        secret=TEST_HMAC_SECRET,
-        evidence_id="PENDING-transfer_test.pcap",
-        payload_hash=SAMPLE_HASH,
-        timestamp=ts,
-    )
-    auth_headers["X-ForenSight-Encryption"] = "AES-GCM-256"
-
-    resp = client.post(
-        "/api/evidence/authenticated",
-        files={"file": ("transfer_test.pcap", io.BytesIO(encrypted_pkg), "application/octet-stream")},
-        data={"source_device": "collector-unit-test", "collector_id": "collector-test-01"},
-        headers=auth_headers,
+        filename="transfer_test.pcap",
+        source_device="collector-unit-test",
+        collector_id="collector-test-01",
     )
 
     assert resp.status_code == 201, resp.text
@@ -136,19 +116,26 @@ def test_successful_encrypted_transfer_and_recovered_artifact_storage(monkeypatc
     assert data["evidence_id"].startswith("EVD-")
     assert data["sha256_hash"] == SAMPLE_HASH
     assert data["file_size_bytes"] == len(SAMPLE_PCAP_BYTES)
-    # Evidence is encrypted at rest by the server
-    assert data.get("is_encrypted") is True, "Authenticated upload should also be encrypted at rest"
+    assert data.get("is_encrypted") is True
 
-    # Verify physical file stored on disk is the RECOVERED PLAINTEXT encrypted at rest
+    # Verify physical file stored on disk is encrypted at rest
     stored_path = Path(data["file_path"])
     assert stored_path.exists()
     stored_bytes = stored_path.read_bytes()
-    # Disk file is ciphertext (at-rest encrypted), NOT raw plaintext
     assert stored_bytes != SAMPLE_PCAP_BYTES, "On-disk bytes should be at-rest ciphertext"
-    # But decrypting should yield the original bytes
-    recovered, _ = decrypt_payload(stored_bytes, TEST_ENCRYPTION_KEY)
-    assert recovered == SAMPLE_PCAP_BYTES
-    assert hashlib.sha256(recovered).hexdigest() == SAMPLE_HASH
+
+    # Decrypt and verify recovered matches plaintext
+    from server.app.database.session import SessionLocal
+    from server.app.models.evidence import Evidence
+    from server.app.core.crypto import decrypt_evidence_artifact
+    db = SessionLocal()
+    try:
+        evd_obj = db.query(Evidence).filter(Evidence.evidence_id == data["evidence_id"]).first()
+        recovered, _ = decrypt_evidence_artifact(evd_obj, stored_bytes)
+        assert recovered == SAMPLE_PCAP_BYTES
+        assert hashlib.sha256(recovered).hexdigest() == SAMPLE_HASH
+    finally:
+        db.close()
 
     # Verify AES_DECRYPTION benchmark was recorded
     bench_resp = client.get(f"/api/benchmarks/evidence/{data['evidence_id']}")
@@ -160,134 +147,49 @@ def test_successful_encrypted_transfer_and_recovered_artifact_storage(monkeypatc
     assert aes_bench[0]["sample_size_bytes"] == len(SAMPLE_PCAP_BYTES)
 
 
-def test_decryption_failure_with_wrong_key(monkeypatch):
-    """Verify that encrypting with Key A and decrypting with Key B returns HTTP 422."""
-    from server.app.core.config import settings
-    monkeypatch.setattr(settings, "FORENSIGHT_HMAC_SECRET", TEST_HMAC_SECRET)
-    monkeypatch.setattr(settings, "FORENSIGHT_ENCRYPTION_KEY", TEST_ENCRYPTION_KEY)  # Server has Key A
-
-    # Encrypt with Key B
-    encrypted_pkg, _ = encrypt_payload(
+def test_decryption_failure_with_wrong_key():
+    """Verify that submitting corrupted ciphertext fails safely with HTTP 422."""
+    resp = upload_secure_evidence(
+        client,
         SAMPLE_PCAP_BYTES,
-        WRONG_ENCRYPTION_KEY,
-        associated_data=SAMPLE_HASH.encode("utf-8"),
+        filename="wrong_key.pcap",
+        corrupt_ciphertext=True,
     )
-
-    ts = int(time.time())
-    auth_headers = sign_request(
-        secret=TEST_HMAC_SECRET,
-        evidence_id="PENDING-wrong_key.pcap",
-        payload_hash=SAMPLE_HASH,
-        timestamp=ts,
-    )
-    auth_headers["X-ForenSight-Encryption"] = "AES-GCM-256"
-
-    resp = client.post(
-        "/api/evidence/authenticated",
-        files={"file": ("wrong_key.pcap", io.BytesIO(encrypted_pkg), "application/octet-stream")},
-        data={"source_device": "collector-unit-test"},
-        headers=auth_headers,
-    )
-
     assert resp.status_code == 422
-    assert "decryption verification failed" in resp.json()["detail"].lower()
+    assert "decryption or authentication failed" in resp.json()["detail"].lower()
 
 
-def test_ciphertext_tampering_rejected(monkeypatch):
-    """Verify that tampering with a single byte of ciphertext in transit causes 422 rejection."""
-    from server.app.core.config import settings
-    monkeypatch.setattr(settings, "FORENSIGHT_HMAC_SECRET", TEST_HMAC_SECRET)
-    monkeypatch.setattr(settings, "FORENSIGHT_ENCRYPTION_KEY", TEST_ENCRYPTION_KEY)
-
-    encrypted_pkg, _ = encrypt_payload(
+def test_ciphertext_tampering_rejected():
+    """Verify that tampering with ciphertext in transit causes 422 rejection."""
+    resp = upload_secure_evidence(
+        client,
         SAMPLE_PCAP_BYTES,
-        TEST_ENCRYPTION_KEY,
-        associated_data=SAMPLE_HASH.encode("utf-8"),
+        filename="tampered_cipher.pcap",
+        corrupt_ciphertext=True,
     )
-
-    # Corrupt a byte in the ciphertext body
-    tampered_bytes = bytearray(encrypted_pkg)
-    tampered_bytes[-1] ^= 0xFF  # Flip bits of last byte
-
-    ts = int(time.time())
-    auth_headers = sign_request(
-        secret=TEST_HMAC_SECRET,
-        evidence_id="PENDING-tampered_cipher.pcap",
-        payload_hash=SAMPLE_HASH,
-        timestamp=ts,
-    )
-    auth_headers["X-ForenSight-Encryption"] = "AES-GCM-256"
-
-    resp = client.post(
-        "/api/evidence/authenticated",
-        files={"file": ("tampered_cipher.pcap", io.BytesIO(tampered_bytes), "application/octet-stream")},
-        data={"source_device": "collector-unit-test"},
-        headers=auth_headers,
-    )
-
     assert resp.status_code == 422
-    assert "decryption verification failed" in resp.json()["detail"].lower()
+    assert "decryption or authentication failed" in resp.json()["detail"].lower()
 
 
-def test_authentication_failure_before_decryption(monkeypatch):
-    """Verify that an invalid HMAC signature fails with 403 before any decryption is attempted."""
-    from server.app.core.config import settings
-    monkeypatch.setattr(settings, "FORENSIGHT_HMAC_SECRET", TEST_HMAC_SECRET)
-    monkeypatch.setattr(settings, "FORENSIGHT_ENCRYPTION_KEY", TEST_ENCRYPTION_KEY)
-
-    encrypted_pkg, _ = encrypt_payload(
+def test_authentication_failure_before_decryption():
+    """Verify that an invalid RSA signature fails with 403 before any decryption is attempted."""
+    resp = upload_secure_evidence(
+        client,
         SAMPLE_PCAP_BYTES,
-        TEST_ENCRYPTION_KEY,
-        associated_data=SAMPLE_HASH.encode("utf-8"),
+        filename="auth_fail.pcap",
+        corrupt_signature=True,
     )
-
-    ts = int(time.time())
-    auth_headers = sign_request(
-        secret=TEST_HMAC_SECRET,
-        evidence_id="PENDING-auth_fail.pcap",
-        payload_hash=SAMPLE_HASH,
-        timestamp=ts,
-    )
-    auth_headers["X-ForenSight-Encryption"] = "AES-GCM-256"
-    # Tamper with HMAC signature
-    auth_headers["X-ForenSight-Signature"] = "0000000000000000000000000000000000000000000000000000000000000000"
-
-    resp = client.post(
-        "/api/evidence/authenticated",
-        files={"file": ("auth_fail.pcap", io.BytesIO(encrypted_pkg), "application/octet-stream")},
-        headers=auth_headers,
-    )
-
     assert resp.status_code == 403
-    assert "hmac signature verification failed" in resp.json()["detail"].lower()
+    assert "rsa digital signature verification failed" in resp.json()["detail"].lower()
 
 
-def test_chain_of_custody_notes_reflect_encryption(monkeypatch):
-    """Verify that chain-of-custody notes clearly record that encrypted transfer was used."""
-    from server.app.core.config import settings
-    monkeypatch.setattr(settings, "FORENSIGHT_HMAC_SECRET", TEST_HMAC_SECRET)
-    monkeypatch.setattr(settings, "FORENSIGHT_ENCRYPTION_KEY", TEST_ENCRYPTION_KEY)
-
-    encrypted_pkg, _ = encrypt_payload(
+def test_chain_of_custody_notes_reflect_encryption():
+    """Verify that chain-of-custody notes clearly record that encrypted transfer and RSA signature were used."""
+    resp = upload_secure_evidence(
+        client,
         SAMPLE_PCAP_BYTES,
-        TEST_ENCRYPTION_KEY,
-        associated_data=SAMPLE_HASH.encode("utf-8"),
+        filename="custody_enc.pcap",
     )
-    ts = int(time.time())
-    auth_headers = sign_request(
-        secret=TEST_HMAC_SECRET,
-        evidence_id="PENDING-custody_enc.pcap",
-        payload_hash=SAMPLE_HASH,
-        timestamp=ts,
-    )
-    auth_headers["X-ForenSight-Encryption"] = "AES-GCM-256"
-
-    resp = client.post(
-        "/api/evidence/authenticated",
-        files={"file": ("custody_enc.pcap", io.BytesIO(encrypted_pkg), "application/octet-stream")},
-        headers=auth_headers,
-    )
-
     assert resp.status_code == 201
     evd_id = resp.json()["evidence_id"]
 
@@ -296,7 +198,8 @@ def test_chain_of_custody_notes_reflect_encryption(monkeypatch):
     custody_list = custody_resp.json()
     assert len(custody_list) >= 1
     acquired_event = custody_list[0]
-    assert "AES-GCM encrypted transfer" in acquired_event["notes"]
+    assert "rsa-pss signature verified" in acquired_event["notes"].lower()
+    assert "aes-256-gcm encrypted at rest" in acquired_event["notes"].lower()
 
 
 # ---------------------------------------------------------------------------
@@ -307,19 +210,18 @@ SAMPLE_TXT_BYTES = b"ForenSight at-rest encryption test payload for browser uplo
 SAMPLE_TXT_HASH = hashlib.sha256(SAMPLE_TXT_BYTES).hexdigest()
 
 
-def test_browser_upload_file_encrypted_at_rest(monkeypatch):
+def test_browser_upload_file_encrypted_at_rest():
     """
-    Test 10: When FORENSIGHT_ENCRYPTION_KEY is set, a browser-uploaded artifact
+    Test 10: In unified secure upload, an uploaded artifact
     must be stored as AES-256-GCM ciphertext on disk, not plaintext.
     The is_encrypted flag in the response must be True.
     """
-    from server.app.core.config import settings
-    monkeypatch.setattr(settings, "FORENSIGHT_ENCRYPTION_KEY", TEST_ENCRYPTION_KEY)
-
-    resp = client.post(
-        "/api/evidence",
-        files={"file": ("at_rest_enc.txt", io.BytesIO(SAMPLE_TXT_BYTES), "text/plain")},
-        data={"source_device": "test-browser", "collector_id": "test-encrypt-01"},
+    resp = upload_secure_evidence(
+        client,
+        SAMPLE_TXT_BYTES,
+        filename="at_rest_enc.txt",
+        source_device="test-browser",
+        collector_id="test-encrypt-01",
     )
     assert resp.status_code == 201, resp.text
     data = resp.json()
@@ -337,25 +239,30 @@ def test_browser_upload_file_encrypted_at_rest(monkeypatch):
     disk_bytes = stored_path.read_bytes()
     assert disk_bytes != SAMPLE_TXT_BYTES, "On-disk bytes must be ciphertext, not plaintext"
 
-    # Verify disk bytes can be decrypted back to the original
-    recovered, _ = decrypt_payload(disk_bytes, TEST_ENCRYPTION_KEY)
-    assert recovered == SAMPLE_TXT_BYTES, "Decrypted ciphertext must match original plaintext"
-    assert hashlib.sha256(recovered).hexdigest() == SAMPLE_TXT_HASH
+    # Verify disk bytes can be decrypted back to the original using decrypt_evidence_artifact
+    from server.app.database.session import SessionLocal
+    from server.app.models.evidence import Evidence
+    from server.app.core.crypto import decrypt_evidence_artifact
+    db = SessionLocal()
+    try:
+        evd_obj = db.query(Evidence).filter(Evidence.evidence_id == data["evidence_id"]).first()
+        recovered, _ = decrypt_evidence_artifact(evd_obj, disk_bytes)
+        assert recovered == SAMPLE_TXT_BYTES, "Decrypted ciphertext must match original plaintext"
+        assert hashlib.sha256(recovered).hexdigest() == SAMPLE_TXT_HASH
+    finally:
+        db.close()
 
 
-def test_browser_upload_integrity_verify_passes_for_encrypted_artifact(monkeypatch):
+def test_browser_upload_integrity_verify_passes_for_encrypted_artifact():
     """
     Test 11: POST /api/evidence/{id}/verify must correctly decrypt the at-rest
     ciphertext before hashing and return INTACT when the file is untampered.
     """
-    from server.app.core.config import settings
-    monkeypatch.setattr(settings, "FORENSIGHT_ENCRYPTION_KEY", TEST_ENCRYPTION_KEY)
-
-    # Upload
-    upload_resp = client.post(
-        "/api/evidence",
-        files={"file": ("verify_enc.txt", io.BytesIO(SAMPLE_TXT_BYTES), "text/plain")},
-        data={"source_device": "test-browser"},
+    upload_resp = upload_secure_evidence(
+        client,
+        SAMPLE_TXT_BYTES,
+        filename="verify_enc.txt",
+        source_device="test-browser",
     )
     assert upload_resp.status_code == 201, upload_resp.text
     evd_id = upload_resp.json()["evidence_id"]
@@ -370,18 +277,16 @@ def test_browser_upload_integrity_verify_passes_for_encrypted_artifact(monkeypat
     assert v["current_hash"] == SAMPLE_TXT_HASH
 
 
-def test_browser_upload_custody_notes_record_at_rest_encryption(monkeypatch):
+def test_browser_upload_custody_notes_record_at_rest_encryption():
     """
     Test 12: Chain-of-custody ACQUIRED note must mention at-rest encryption
-    when the file is encrypted by the server after a browser upload.
+    when the file is uploaded and encrypted at rest.
     """
-    from server.app.core.config import settings
-    monkeypatch.setattr(settings, "FORENSIGHT_ENCRYPTION_KEY", TEST_ENCRYPTION_KEY)
-
-    resp = client.post(
-        "/api/evidence",
-        files={"file": ("custody_enc.txt", io.BytesIO(SAMPLE_TXT_BYTES), "text/plain")},
-        data={"source_device": "test-browser"},
+    resp = upload_secure_evidence(
+        client,
+        SAMPLE_TXT_BYTES,
+        filename="custody_enc.txt",
+        source_device="test-browser",
     )
     assert resp.status_code == 201, resp.text
     evd_id = resp.json()["evidence_id"]
@@ -396,18 +301,16 @@ def test_browser_upload_custody_notes_record_at_rest_encryption(monkeypatch):
     )
 
 
-def test_tampered_encrypted_artifact_returns_tampered(monkeypatch, tmp_path):
+def test_tampered_encrypted_artifact_returns_tampered():
     """
     Test 13: If the on-disk AES-GCM ciphertext is modified after acquisition,
     POST /api/evidence/{id}/verify must return TAMPERED (GCM tag mismatch).
     """
-    from server.app.core.config import settings
-    monkeypatch.setattr(settings, "FORENSIGHT_ENCRYPTION_KEY", TEST_ENCRYPTION_KEY)
-
-    resp = client.post(
-        "/api/evidence",
-        files={"file": ("tamper_enc.txt", io.BytesIO(SAMPLE_TXT_BYTES), "text/plain")},
-        data={"source_device": "test-browser"},
+    resp = upload_secure_evidence(
+        client,
+        SAMPLE_TXT_BYTES,
+        filename="tamper_enc.txt",
+        source_device="test-browser",
     )
     assert resp.status_code == 201, resp.text
     data = resp.json()
@@ -426,39 +329,30 @@ def test_tampered_encrypted_artifact_returns_tampered(monkeypatch, tmp_path):
     assert v["is_intact"] is False
 
 
-def test_browser_upload_no_encryption_without_key(monkeypatch):
+def test_browser_upload_requires_encryption_and_signature():
     """
-    Test 14: When FORENSIGHT_ENCRYPTION_KEY is empty/unset, a browser upload
-    must be stored as plaintext and is_encrypted must be False (backward compat).
+    Test 14: Unified upload endpoint rejects unencrypted uploads without crypto parameters.
     """
-    from server.app.core.config import settings
-    monkeypatch.setattr(settings, "FORENSIGHT_ENCRYPTION_KEY", "")
-
     resp = client.post(
         "/api/evidence",
         files={"file": ("no_enc.txt", io.BytesIO(SAMPLE_TXT_BYTES), "text/plain")},
         data={"source_device": "test-browser"},
     )
-    assert resp.status_code == 201, resp.text
-    data = resp.json()
-    assert data.get("is_encrypted") is False
-    stored_path = Path(data["file_path"])
-    assert stored_path.read_bytes() == SAMPLE_TXT_BYTES, "Without key, file must be stored as plaintext"
+    assert resp.status_code == 422
+    assert "requires client-side aes-256-gcm encryption" in resp.json()["detail"].lower()
 
 
-def test_download_encrypted_evidence_decrypts_and_returns_plaintext(monkeypatch):
+def test_download_encrypted_evidence_decrypts_and_returns_plaintext():
     """
     Test 15: Authorized download of an encrypted-at-rest artifact safely decrypts
     on the fly, returns the original plaintext bytes matching original SHA-256,
     and logs a DOWNLOAD custody record.
     """
-    from server.app.core.config import settings
-    monkeypatch.setattr(settings, "FORENSIGHT_ENCRYPTION_KEY", TEST_ENCRYPTION_KEY)
-
-    resp = client.post(
-        "/api/evidence",
-        files={"file": ("download_enc.txt", io.BytesIO(SAMPLE_TXT_BYTES), "text/plain")},
-        data={"source_device": "test-browser"},
+    resp = upload_secure_evidence(
+        client,
+        SAMPLE_TXT_BYTES,
+        filename="download_enc.txt",
+        source_device="test-browser",
     )
     assert resp.status_code == 201, resp.text
     evd_id = resp.json()["evidence_id"]
@@ -479,18 +373,16 @@ def test_download_encrypted_evidence_decrypts_and_returns_plaintext(monkeypatch)
     assert "DOWNLOAD" in actions
 
 
-def test_download_tampered_encrypted_evidence_returns_422(monkeypatch):
+def test_download_tampered_encrypted_evidence_returns_422():
     """
     Test 16: Downloading a tampered encrypted artifact fails authentication tag
     verification and returns HTTP 422.
     """
-    from server.app.core.config import settings
-    monkeypatch.setattr(settings, "FORENSIGHT_ENCRYPTION_KEY", TEST_ENCRYPTION_KEY)
-
-    resp = client.post(
-        "/api/evidence",
-        files={"file": ("tamper_dl.txt", io.BytesIO(SAMPLE_TXT_BYTES), "text/plain")},
-        data={"source_device": "test-browser"},
+    resp = upload_secure_evidence(
+        client,
+        SAMPLE_TXT_BYTES,
+        filename="tamper_dl.txt",
+        source_device="test-browser",
     )
     assert resp.status_code == 201, resp.text
     evd_id = resp.json()["evidence_id"]
@@ -514,39 +406,31 @@ def test_download_nonexistent_evidence_returns_404():
     assert dl_resp.status_code == 404
 
 
-def test_encryption_cannot_bypass_with_invalid_key(monkeypatch):
+def test_encryption_cannot_bypass_with_corrupt_ciphertext():
     """
-    Test 18: An invalid FORENSIGHT_ENCRYPTION_KEY (e.g. wrong length) rejects upload
-    with HTTP 500 and prevents silent fallback to unencrypted disk storage.
+    Test 18: Upload with corrupt/tampered ciphertext fails decryption and returns 422.
     """
-    from server.app.core.config import settings
-    monkeypatch.setattr(settings, "FORENSIGHT_ENCRYPTION_KEY", "too-short-invalid-key")
-
-    resp = client.post(
-        "/api/evidence",
-        files={"file": ("invalid_key.txt", io.BytesIO(SAMPLE_TXT_BYTES), "text/plain")},
-        data={"source_device": "test-workstation"},
+    resp = upload_secure_evidence(
+        client,
+        SAMPLE_TXT_BYTES,
+        filename="invalid_key.txt",
+        corrupt_ciphertext=True,
     )
-    assert resp.status_code == 500
-    assert "encryption failed" in resp.json()["detail"].lower()
+    assert resp.status_code == 422
+    assert "decryption or authentication failed" in resp.json()["detail"].lower()
 
 
-def test_encryption_enforced_when_require_encryption_enabled(monkeypatch):
+def test_encryption_enforced_when_unencrypted_upload_attempted():
     """
-    Test 19: When FORENSIGHT_REQUIRE_ENCRYPTION=True and FORENSIGHT_ENCRYPTION_KEY is unset,
-    upload must fail with HTTP 500 rather than silently bypassing encryption.
+    Test 19: Unencrypted upload attempts to /api/evidence are rejected with 422.
     """
-    from server.app.core.config import settings
-    monkeypatch.setattr(settings, "FORENSIGHT_ENCRYPTION_KEY", "")
-    monkeypatch.setattr(settings, "FORENSIGHT_REQUIRE_ENCRYPTION", True)
-
     resp = client.post(
         "/api/evidence",
         files={"file": ("no_bypass.txt", io.BytesIO(SAMPLE_TXT_BYTES), "text/plain")},
         data={"source_device": "test-workstation"},
     )
-    assert resp.status_code == 500
-    assert "encryption is required" in resp.json()["detail"].lower()
+    assert resp.status_code == 422
+    assert "requires client-side aes-256-gcm encryption" in resp.json()["detail"].lower()
 
 
 def test_legacy_plaintext_evidence_compatibility(monkeypatch):

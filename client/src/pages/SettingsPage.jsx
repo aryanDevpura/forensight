@@ -38,45 +38,43 @@ export function SettingsPage({ healthData }) {
         </Card>
 
         <Card
-          title="Collector Node Topology"
-          subtitle="Agent configuration for remote and local evidence transmission"
+          title="Secure Ingestion & Cryptography"
+          subtitle="Unified digital evidence security topology and cryptographic parameters"
         >
           <div className="divide-y divide-[#eaede8] text-xs">
             <div className="flex justify-between py-2">
-              <span className="text-[#536050]">Collector ID:</span>
-              <span className="font-mono text-[#111813] font-semibold">collector-node-01</span>
+              <span className="text-[#536050]">Ingestion Endpoint:</span>
+              <span className="font-mono text-[#111813] font-semibold">POST /api/evidence</span>
             </div>
             <div className="flex justify-between py-2">
-              <span className="text-[#536050]">Target Server Host:</span>
-              <span className="font-mono text-[#111813]">Configurable via .env (e.g. 10.145.1.178)</span>
+              <span className="text-[#536050]">Digital Signature:</span>
+              <span className="font-mono text-[11px] text-[#0369a1] font-semibold">RSA-PSS / SHA-256 (32-byte salt)</span>
             </div>
             <div className="flex justify-between py-2">
-              <span className="text-[#536050]">Target Server Port:</span>
-              <span className="font-mono text-[#111813]">8000</span>
+              <span className="text-[#536050]">Key Wrapping:</span>
+              <span className="font-mono text-[11px] text-[#0369a1] font-semibold">RSA-OAEP / SHA-256 (2048-bit KEK)</span>
             </div>
             <div className="flex justify-between py-2">
-              <span className="text-[#536050]">Collector Module:</span>
-              <span className="font-mono text-[11px] text-[#111813]">collector/collector.py</span>
+              <span className="text-[#536050]">Transfer & Rest Encryption:</span>
+              <span className="font-mono text-[11px] text-[#1a5935] font-semibold">AES-256-GCM (96-bit random nonce)</span>
             </div>
             <div className="flex justify-between py-2">
-              <span className="text-[#536050]">Server Probe Target:</span>
+              <span className="text-[#536050]">Trusted Signers Store:</span>
+              <span className="font-mono text-[11px] text-[#111813]">server/keys/trusted_signers/</span>
+            </div>
+            <div className="flex justify-between py-2">
+              <span className="text-[#536050]">Server Public Key:</span>
               <span className="font-mono text-[11px] text-[#1a5935]">
-                {import.meta.env.VITE_API_URL ? `${import.meta.env.VITE_API_URL}/api/health` : '/api/health (Proxy: 8000)'}
+                {import.meta.env.VITE_API_URL ? `${import.meta.env.VITE_API_URL}/api/system/public-keys` : '/api/system/public-keys'}
               </span>
             </div>
             <div className="flex justify-between py-2">
-              <span className="text-[#536050]">Connected Server Host:</span>
-              <span className="font-mono text-[11px] text-[#111813]">
-                {import.meta.env.VITE_API_URL || 'Local / Vite Proxy Target'}
-              </span>
+              <span className="text-[#536050]">Integrity Standard:</span>
+              <span className="text-[#111813] font-mono text-[11px]">Original Plaintext SHA-256 Digest</span>
             </div>
             <div className="flex justify-between py-2">
-              <span className="text-[#536050]">Telemetry Protocol:</span>
-              <span className="text-[#111813]">REST / JSON HTTP</span>
-            </div>
-            <div className="flex justify-between py-2">
-              <span className="text-[#536050]">Transfer Encryption:</span>
-              <span className="font-mono text-[11px] text-[#1a5935] font-semibold">AES-256-GCM (Authenticated)</span>
+              <span className="text-[#536050]">Storage Security:</span>
+              <span className="font-mono text-[11px] text-[#1a5935] font-semibold">At-Rest Authenticated Ciphertext</span>
             </div>
           </div>
         </Card>

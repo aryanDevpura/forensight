@@ -80,25 +80,15 @@ def run_evidence_analysis(
     raw_disk_bytes = evidence_path.read_bytes()
 
     if evidence.is_encrypted:
-        from server.app.core.crypto import decrypt_payload as _decrypt_payload
-        from server.app.core.config import settings as _crypto_settings
-        if not _crypto_settings.FORENSIGHT_ENCRYPTION_KEY:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=(
-                    "Evidence artifact is encrypted at rest but FORENSIGHT_ENCRYPTION_KEY "
-                    "is not configured. Cannot perform analysis."
-                ),
-            )
+        from server.app.core.crypto import decrypt_evidence_artifact as _decrypt_evidence_artifact
         try:
-            bytes_to_check, _ = _decrypt_payload(raw_disk_bytes, _crypto_settings.FORENSIGHT_ENCRYPTION_KEY)
-        except ValueError:
+            bytes_to_check, _ = _decrypt_evidence_artifact(evidence, raw_disk_bytes)
+        except ValueError as exc:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=(
                     f"Pre-analysis integrity check FAILED for '{evidence.evidence_id}': "
-                    "AES-GCM authentication tag mismatch — the encrypted artifact "
-                    "has been corrupted or tampered with after acquisition."
+                    f"decryption or authentication tag verification failed ({exc})."
                 ),
             )
     else:

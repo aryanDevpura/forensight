@@ -1,8 +1,29 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Card } from '../components/common/Card';
 import { StatusBadge } from '../components/common/StatusBadge';
-import { fetchEvidence, uploadEvidence, verifyEvidence, getEvidenceDownloadUrl } from '../api/client';
-import { Upload, Inbox, CheckCircle2, AlertTriangle, FileCode, RefreshCw, X, ShieldCheck, ShieldAlert, Lock, Download } from 'lucide-react';
+import { fetchEvidence, uploadEvidence, verifyEvidence, getEvidenceDownloadUrl, fetchServerPublicKey } from '../api/client';
+import {
+  computeSha256,
+  encryptEvidencePayload,
+  wrapAesKeyWithServerPublicKey,
+  buildCanonicalSigningData,
+  signCanonicalDataWithRsaPss,
+} from '../utils/crypto';
+import {
+  Upload,
+  Inbox,
+  CheckCircle2,
+  AlertTriangle,
+  FileCode,
+  RefreshCw,
+  X,
+  ShieldCheck,
+  ShieldAlert,
+  Lock,
+  Download,
+  KeyRound,
+  FileSignature,
+} from 'lucide-react';
 
 function formatBytes(bytes) {
   if (bytes === 0) return '0 B';
@@ -16,17 +37,44 @@ export function EvidencePage({ onEvidenceUploaded }) {
   const [evidenceList, setEvidenceList] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isUploading, setIsUploading] = useState(false);
+  const [uploadProgressText, setUploadProgressText] = useState('');
   const [showUploadForm, setShowUploadForm] = useState(false);
   const [selectedFile, setSelectedFile] = useState(null);
   const [sourceDevice, setSourceDevice] = useState('local-workstation');
   const [collectorId, setCollectorId] = useState('collector-node-01');
   const [description, setDescription] = useState('');
+  const [signerKeyId, setSignerKeyId] = useState('client-demo-01');
+  const [signingKeyPem, setSigningKeyPem] = useState(null);
+  const [keySource, setKeySource] = useState('demo');
+  const [customKeyFileName, setCustomKeyFileName] = useState(null);
+  const [serverKeyData, setServerKeyData] = useState(null);
   const [successMessage, setSuccessMessage] = useState(null);
   const [errorMessage, setErrorMessage] = useState(null);
   const [verifyingMap, setVerifyingMap] = useState({});
   const [verificationResults, setVerificationResults] = useState({});
   const [verificationNotification, setVerificationNotification] = useState(null);
   const fileInputRef = useRef(null);
+  const keyInputRef = useRef(null);
+
+  const loadServerKeys = useCallback(async () => {
+    try {
+      const keys = await fetchServerPublicKey();
+      setServerKeyData(keys);
+      if (keys.demo_client_private_key && !signingKeyPem) {
+        setSigningKeyPem(keys.demo_client_private_key);
+        setKeySource('demo');
+      }
+      if (keys.trusted_signer_id) {
+        setSignerKeyId(keys.trusted_signer_id);
+      }
+    } catch {
+      // Ignored: keys can also be loaded manually
+    }
+  }, [signingKeyPem]);
+
+  useEffect(() => {
+    loadServerKeys();
+  }, [loadServerKeys]);
 
   const loadEvidence = useCallback(async () => {
     setIsLoading(true);
@@ -52,6 +100,20 @@ export function EvidencePage({ onEvidenceUploaded }) {
     }
   };
 
+  const handleKeyFileChange = (e) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        setSigningKeyPem(event.target.result);
+        setKeySource('custom');
+        setCustomKeyFileName(file.name);
+        setErrorMessage(null);
+      };
+      reader.readAsText(file);
+    }
+  };
+
   const handleUploadSubmit = async (e) => {
     e.preventDefault();
     if (!selectedFile) {
@@ -59,38 +121,110 @@ export function EvidencePage({ onEvidenceUploaded }) {
       return;
     }
 
+    if (!signingKeyPem) {
+      setErrorMessage('Uploader RSA private key is required to sign the evidence upload. Please select or load a signing key.');
+      return;
+    }
+
     setIsUploading(true);
     setErrorMessage(null);
     setSuccessMessage(null);
 
-    const formData = new FormData();
-    formData.append('file', selectedFile);
-    formData.append('source_device', sourceDevice);
-    if (collectorId) formData.append('collector_id', collectorId);
-    if (description) formData.append('description', description);
-
     try {
+      // 1. Calculate SHA-256 of original bytes
+      setUploadProgressText('Calculating SHA-256 of original evidence...');
+      const fileBuffer = await selectedFile.arrayBuffer();
+      const originalSha256 = await computeSha256(fileBuffer);
+
+      // 2. Encrypt evidence with AES-256-GCM
+      setUploadProgressText('Encrypting evidence with AES-256-GCM...');
+      const {
+        rawAesKey,
+        nonceHex,
+        tagHex,
+        packagedBytes,
+        payloadSha256,
+      } = await encryptEvidencePayload(fileBuffer);
+
+      // 3. Wrap AES key with server RSA-OAEP public key
+      setUploadProgressText('Wrapping AES key with Server RSA-OAEP public key...');
+      let serverPubKey = serverKeyData?.server_public_key;
+      if (!serverPubKey) {
+        const freshKeys = await fetchServerPublicKey();
+        setServerKeyData(freshKeys);
+        serverPubKey = freshKeys.server_public_key;
+      }
+      const wrappedAesKeyHex = await wrapAesKeyWithServerPublicKey(serverPubKey, rawAesKey);
+
+      // 4. Construct canonical message & sign with RSA-PSS
+      setUploadProgressText('Generating RSA-PSS digital signature...');
+      const timestamp = Math.floor(Date.now() / 1000);
+      const uploadId = `UPLOAD-${Date.now().toString(36).toUpperCase()}`;
+      const canonicalBytes = buildCanonicalSigningData({
+        upload_id: uploadId,
+        original_sha256: originalSha256,
+        filename: selectedFile.name,
+        source_device: sourceDevice,
+        collector_id: collectorId,
+        timestamp,
+        encryption_algorithm: 'AES-256-GCM',
+        nonce_hex: nonceHex,
+        tag_hex: tagHex,
+        encrypted_payload_sha256: payloadSha256,
+      });
+
+      const signatureHex = await signCanonicalDataWithRsaPss(signingKeyPem, canonicalBytes);
+
+      // 5. Send upload to FastAPI
+      setUploadProgressText('Uploading encrypted payload to Investigation Server...');
+      const formData = new FormData();
+      formData.append('file', new Blob([packagedBytes], { type: 'application/octet-stream' }), selectedFile.name);
+      formData.append('source_device', sourceDevice);
+      if (collectorId) formData.append('collector_id', collectorId);
+      if (description) formData.append('description', description);
+      formData.append('original_sha256', originalSha256);
+      formData.append('encrypted_aes_key', wrappedAesKeyHex);
+      formData.append('rsa_signature', signatureHex);
+      formData.append('signer_key_id', signerKeyId || 'client-demo-01');
+      formData.append('nonce', nonceHex);
+      formData.append('tag', tagHex);
+      formData.append('timestamp', timestamp.toString());
+      formData.append('upload_id', uploadId);
+
+      setUploadProgressText('Verifying RSA signature & decrypting AES-GCM on server...');
       const result = await uploadEvidence(formData);
+
       setSuccessMessage(
-        `Artifact successfully ingested! Evidence ID: ${result.evidence_id} • SHA-256: ${result.sha256_hash.slice(0, 16)}...`
+        `Upload successful! Artifact verified & stored at rest (AES-256-GCM). ID: ${result.evidence_id} • SHA-256: ${result.sha256_hash.slice(0, 16)}... • RSA-PSS Signature: Verified`
       );
+
       // Reset form
       setSelectedFile(null);
       setDescription('');
       if (fileInputRef.current) fileInputRef.current.value = '';
       setShowUploadForm(false);
 
-      // Automatically refresh the table
+      // Refresh evidence table and app-level dashboard stats
       await loadEvidence();
-
-      // Trigger app-level dashboard stats refresh
       if (onEvidenceUploaded) {
         onEvidenceUploaded();
       }
     } catch (err) {
-      setErrorMessage(err.message || 'Failed to ingest evidence artifact');
+      const msg = err.message || '';
+      let failureTitle = 'Upload rejected';
+      if (msg.toLowerCase().includes('signature verification failed') || msg.toLowerCase().includes('signature does not match')) {
+        failureTitle = 'Signature verification failed';
+      } else if (msg.toLowerCase().includes('tag mismatch') || msg.toLowerCase().includes('decryption or authentication failed') || msg.toLowerCase().includes('aes-gcm')) {
+        failureTitle = 'Decryption or authentication failed';
+      } else if (msg.toLowerCase().includes('integrity verification failed') || msg.toLowerCase().includes('digest')) {
+        failureTitle = 'Integrity verification failed';
+      } else if (msg.toLowerCase().includes('untrusted')) {
+        failureTitle = 'Untrusted signing key rejected';
+      }
+      setErrorMessage(`${failureTitle}: ${msg}`);
     } finally {
       setIsUploading(false);
+      setUploadProgressText('');
     }
   };
 
@@ -237,8 +371,8 @@ export function EvidencePage({ onEvidenceUploaded }) {
       {/* Upload Panel (Collapsible / Modal section) */}
       {showUploadForm && (
         <Card
-          title="Upload Evidence Artifact"
-          subtitle="Ingest raw forensic files and compute SHA-256 acquisition hash"
+          title="Secure Evidence Ingestion"
+          subtitle="Client-side AES-256-GCM encryption, RSA-OAEP key wrapping, and RSA-PSS digital signing"
           action={
             <button
               onClick={() => {
@@ -252,6 +386,19 @@ export function EvidencePage({ onEvidenceUploaded }) {
           }
         >
           <form onSubmit={handleUploadSubmit} className="space-y-4 text-xs">
+            {/* Cryptographic Security Notice */}
+            <div className="p-2.5 bg-[#f0fdf4] border border-[#86efac] rounded-sm text-[#166534] text-[11px] flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <Lock className="w-4 h-4 text-[#16a34a] shrink-0" />
+                <span>
+                  <strong>Zero-Knowledge Transfer:</strong> Artifacts are hashed (SHA-256), encrypted client-side with AES-256-GCM, and signed with RSA-PSS before network transmission.
+                </span>
+              </div>
+              <span className="font-mono text-[10px] bg-white px-2 py-0.5 border border-[#86efac] rounded-sm text-[#15803d]">
+                RSA-PSS + AES-256-GCM
+              </span>
+            </div>
+
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
                 <label className="block font-semibold text-[#111813] mb-1">
@@ -271,6 +418,65 @@ export function EvidencePage({ onEvidenceUploaded }) {
 
               <div>
                 <label className="block font-semibold text-[#111813] mb-1">
+                  Uploader RSA Signing Key (.pem) <span className="text-[#991b1b]">*</span>
+                </label>
+                <div className="flex items-center gap-2">
+                  <input
+                    ref={keyInputRef}
+                    type="file"
+                    accept=".pem,.key"
+                    onChange={handleKeyFileChange}
+                    disabled={isUploading}
+                    className="w-full text-xs font-mono text-[#111813] bg-[#faf8f3] border border-[#d7ded4] rounded-sm p-2 file:mr-2 file:py-0.5 file:px-2 file:rounded-sm file:border-0 file:text-[11px] file:font-semibold file:bg-[#334155] file:text-white hover:file:bg-[#1e293b] cursor-pointer"
+                  />
+                  {serverKeyData?.demo_client_private_key && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSigningKeyPem(serverKeyData.demo_client_private_key);
+                        setKeySource('demo');
+                        setCustomKeyFileName(null);
+                        setSignerKeyId(serverKeyData.trusted_signer_id || 'client-demo-01');
+                        if (keyInputRef.current) keyInputRef.current.value = '';
+                      }}
+                      disabled={isUploading}
+                      className="shrink-0 px-2.5 py-2 bg-[#f4f1ea] hover:bg-[#eaede8] text-[#1b5e34] border border-[#bdc7ba] rounded-sm text-[11px] font-mono whitespace-nowrap"
+                      title="Load default trusted workstation signing key"
+                    >
+                      Use Demo Key
+                    </button>
+                  )}
+                </div>
+                <p className="text-[10px] text-[#536050] mt-1 font-sans flex items-center gap-1">
+                  <KeyRound className="w-3 h-3 text-[#16a34a]" />
+                  <span>
+                    Status: {signingKeyPem ? (
+                      <span className="text-[#16a34a] font-semibold">
+                        {keySource === 'demo' ? 'Workstation Key Loaded (client-demo-01)' : `Custom Key Loaded (${customKeyFileName})`}
+                      </span>
+                    ) : (
+                      <span className="text-[#b91c1c] font-semibold">No signing key selected</span>
+                    )}
+                  </span>
+                </p>
+              </div>
+
+              <div>
+                <label className="block font-semibold text-[#111813] mb-1">
+                  Signer Key ID
+                </label>
+                <input
+                  type="text"
+                  value={signerKeyId}
+                  onChange={(e) => setSignerKeyId(e.target.value)}
+                  disabled={isUploading}
+                  placeholder="e.g. client-demo-01"
+                  className="w-full text-xs font-mono text-[#111813] bg-[#faf8f3] border border-[#d7ded4] rounded-sm p-2"
+                />
+              </div>
+
+              <div>
+                <label className="block font-semibold text-[#111813] mb-1">
                   Source Device / Workstation
                 </label>
                 <input
@@ -285,7 +491,7 @@ export function EvidencePage({ onEvidenceUploaded }) {
 
               <div>
                 <label className="block font-semibold text-[#111813] mb-1">
-                  Collector Node ID
+                  Collector / Investigator Node ID
                 </label>
                 <input
                   type="text"
@@ -312,36 +518,46 @@ export function EvidencePage({ onEvidenceUploaded }) {
               </div>
             </div>
 
-            <div className="flex items-center justify-end gap-3 pt-2 border-t border-[#eaede8]">
-              <button
-                type="button"
-                onClick={() => {
-                  setShowUploadForm(false);
-                  setSelectedFile(null);
-                  if (fileInputRef.current) fileInputRef.current.value = '';
-                }}
-                disabled={isUploading}
-                className="px-3 py-1.5 bg-[#f4f1ea] hover:bg-[#eaede8] text-[#111813] text-xs font-medium rounded-sm border border-[#bdc7ba] transition-colors"
-              >
-                Cancel
-              </button>
-              <button
-                type="submit"
-                disabled={isUploading || !selectedFile}
-                className="inline-flex items-center gap-1.5 px-4 py-1.5 bg-[#1b5e34] hover:bg-[#144629] disabled:opacity-50 text-white text-xs font-medium rounded-sm border border-[#144629] transition-colors"
-              >
-                {isUploading ? (
-                  <>
+            <div className="flex items-center justify-between pt-2 border-t border-[#eaede8]">
+              <div className="text-[11px] font-mono text-[#536050]">
+                {isUploading && (
+                  <span className="flex items-center gap-1.5 text-[#1b5e34] font-semibold">
                     <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                    <span>Streaming & Calculating SHA-256...</span>
-                  </>
-                ) : (
-                  <>
-                    <Upload className="w-3.5 h-3.5" />
-                    <span>Upload & Ingest Evidence</span>
-                  </>
+                    <span>{uploadProgressText}</span>
+                  </span>
                 )}
-              </button>
+              </div>
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowUploadForm(false);
+                    setSelectedFile(null);
+                    if (fileInputRef.current) fileInputRef.current.value = '';
+                  }}
+                  disabled={isUploading}
+                  className="px-3 py-1.5 bg-[#f4f1ea] hover:bg-[#eaede8] text-[#111813] text-xs font-medium rounded-sm border border-[#bdc7ba] transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isUploading || !selectedFile || !signingKeyPem}
+                  className="inline-flex items-center gap-1.5 px-4 py-1.5 bg-[#1b5e34] hover:bg-[#144629] disabled:opacity-50 text-white text-xs font-medium rounded-sm border border-[#144629] transition-colors"
+                >
+                  {isUploading ? (
+                    <>
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      <span>Processing Secure Ingestion...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Upload className="w-3.5 h-3.5" />
+                      <span>Sign, Encrypt & Ingest Evidence</span>
+                    </>
+                  )}
+                </button>
+              </div>
             </div>
           </form>
         </Card>
@@ -438,6 +654,15 @@ export function EvidencePage({ onEvidenceUploaded }) {
                           >
                             <Lock className="w-2.5 h-2.5" />
                             <span>AES-256</span>
+                          </span>
+                        )}
+                        {item.rsa_signature && (
+                          <span
+                            className="ml-1.5 inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-sm bg-[#e0f2fe] text-[#0369a1] border border-[#bae6fd] font-mono text-[10px] font-semibold"
+                            title={`Digitally signed with RSA-PSS by ${item.signer_key_id || 'trusted signer'}`}
+                          >
+                            <FileSignature className="w-2.5 h-2.5" />
+                            <span>RSA-PSS</span>
                           </span>
                         )}
                       </td>

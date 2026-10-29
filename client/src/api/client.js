@@ -31,6 +31,18 @@ export async function fetchSystemStats() {
   return await response.json();
 }
 
+export async function fetchServerPublicKey() {
+  const response = await fetch(`${BASE_URL}/api/system/public-keys`, {
+    headers: {
+      'Accept': 'application/json',
+    },
+  });
+  if (!response.ok) {
+    throw new Error(`Failed to fetch server public keys: HTTP ${response.status}`);
+  }
+  return await response.json();
+}
+
 export async function fetchEvidence() {
   const response = await fetch(`${BASE_URL}/api/evidence`, {
     headers: {

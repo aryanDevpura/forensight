@@ -4,6 +4,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 from server.app.main import app
 from server.app.database.session import init_db
+from tests.crypto_test_utils import upload_secure_evidence
 
 # Ensure test DB is initialized
 init_db()
@@ -16,17 +17,13 @@ def test_successful_evidence_upload_and_sha256():
     known_content = b"FORENSIC_EVIDENCE_SAMPLE_PACKET_DATA_2026_TEST_VECTOR_12345"
     expected_sha256 = hashlib.sha256(known_content).hexdigest()
 
-    file_tuple = ("network_traffic.pcap", io.BytesIO(known_content), "application/octet-stream")
-    form_data = {
-        "source_device": "sensor-alpha-01",
-        "collector_id": "collector-node-01",
-        "description": "Perimeter network packet capture test",
-    }
-
-    response = client.post(
-        "/api/evidence",
-        files={"file": file_tuple},
-        data=form_data,
+    response = upload_secure_evidence(
+        client=client,
+        content=known_content,
+        filename="network_traffic.pcap",
+        source_device="sensor-alpha-01",
+        collector_id="collector-node-01",
+        description="Perimeter network packet capture test",
     )
 
     assert response.status_code == 201, response.text
@@ -51,17 +48,11 @@ def test_successful_evidence_upload_and_sha256():
     with open(disk_path, "rb") as f:
         disk_content = f.read()
 
-    # The server may store the artifact encrypted at rest (if FORENSIGHT_ENCRYPTION_KEY is set).
-    # sha256_hash in the DB always reflects the PLAINTEXT digest regardless.
-    if data.get("is_encrypted"):
-        # Disk holds ciphertext — SHA-256 of ciphertext will differ from plaintext hash
-        assert disk_content != known_content, "Encrypted artifact should not be stored as plaintext"
-        # The DB SHA-256 must still equal the plaintext hash
-        assert data["sha256_hash"] == expected_sha256
-    else:
-        # No encryption: disk content must equal original plaintext
-        assert disk_content == known_content
-        assert hashlib.sha256(disk_content).hexdigest() == expected_sha256
+    # Disk holds ciphertext — SHA-256 of ciphertext will differ from plaintext hash
+    assert data["is_encrypted"] is True
+    assert disk_content != known_content, "Encrypted artifact should not be stored as plaintext"
+    assert data["sha256_hash"] == expected_sha256
+
 
 
 def test_evidence_retrieval_endpoint():
@@ -96,13 +87,12 @@ def test_unsupported_file_type_rejection():
 def test_path_traversal_sanitization():
     content = b"TRAVERSAL_TEST_LOG_DATA"
     expected_hash = hashlib.sha256(content).hexdigest()
-    # Attempt filename with traversal sequences
-    file_tuple = ("../../../../root_compromise.log", io.BytesIO(content), "text/plain")
 
-    response = client.post(
-        "/api/evidence",
-        files={"file": file_tuple},
-        data={"source_device": "workstation-02"},
+    response = upload_secure_evidence(
+        client=client,
+        content=content,
+        filename="../../../../root_compromise.log",
+        source_device="workstation-02",
     )
 
     assert response.status_code == 201

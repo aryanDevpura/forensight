@@ -22,6 +22,7 @@ from fastapi.testclient import TestClient
 
 from server.app.main import app
 from server.app.database.session import init_db
+from tests.crypto_test_utils import upload_secure_evidence
 
 init_db()
 client = TestClient(app)
@@ -44,10 +45,11 @@ def _build_valid_pcap(packet_count=3):
 
 
 def _upload_pcap(pcap_bytes, filename="test.pcap"):
-    resp = client.post(
-        "/api/evidence",
-        files={"file": (filename, io.BytesIO(pcap_bytes), "application/octet-stream")},
-        data={"source_device": "integrity-test-host"},
+    resp = upload_secure_evidence(
+        client=client,
+        content=pcap_bytes,
+        filename=filename,
+        source_device="integrity-test-host",
     )
     assert resp.status_code == 201, resp.text
     return resp.json()
@@ -244,10 +246,11 @@ def test_analysis_blocked_on_tampered_non_pcap_evidence():
     """
     log_content = b"2026-01-01 00:00:00 kernel: system started"
     # Upload a valid .log file
-    resp_upload = client.post(
-        "/api/evidence",
-        files={"file": ("syslog.log", io.BytesIO(log_content), "text/plain")},
-        data={"source_device": "integrity-test-host"},
+    resp_upload = upload_secure_evidence(
+        client=client,
+        content=log_content,
+        filename="syslog.log",
+        source_device="integrity-test-host",
     )
     assert resp_upload.status_code == 201, resp_upload.text
     evd = resp_upload.json()

@@ -14,6 +14,7 @@ Security Design:
 """
 
 import time
+import hashlib
 from typing import Tuple, Optional
 from Crypto.Cipher import AES
 from Crypto.Random import get_random_bytes
@@ -141,3 +142,58 @@ def decrypt_payload(
 
     duration_sec = time.perf_counter() - t0
     return plaintext, duration_sec
+
+
+def compute_payload_hash(data: bytes) -> str:
+    """Return lowercase hex SHA-256 digest of raw bytes."""
+    return hashlib.sha256(data).hexdigest()
+
+
+def recover_evidence_aes_key(evidence, server_private_key=None) -> bytes:
+    """
+    Recover the 32-byte AES key for an evidence artifact.
+
+    If evidence.encrypted_aes_key is present, unwraps it using RSA-OAEP
+    with the server's private key.
+    Otherwise (legacy artifact encrypted with master pre-shared key),
+    falls back to settings.FORENSIGHT_ENCRYPTION_KEY.
+    """
+    from server.app.core.config import settings
+
+    if getattr(evidence, "encrypted_aes_key", None):
+        from server.app.core.rsa_crypto import rsa_oaep_decrypt
+        raw_wrapped = evidence.encrypted_aes_key.strip()
+        try:
+            wrapped_bytes = bytes.fromhex(raw_wrapped)
+        except ValueError:
+            import base64
+            wrapped_bytes = base64.b64decode(raw_wrapped)
+
+        aes_key, _ = rsa_oaep_decrypt(wrapped_bytes, server_private_key)
+        return aes_key
+
+    # Fallback to legacy master key
+    if settings.FORENSIGHT_ENCRYPTION_KEY:
+        return parse_encryption_key(settings.FORENSIGHT_ENCRYPTION_KEY)
+
+    raise ValueError(
+        f"Cannot recover AES key for evidence '{getattr(evidence, 'evidence_id', 'unknown')}': "
+        "no encrypted_aes_key stored and FORENSIGHT_ENCRYPTION_KEY is not configured."
+    )
+
+
+def decrypt_evidence_artifact(
+    evidence,
+    disk_bytes: bytes,
+    server_private_key=None,
+    associated_data: Optional[bytes] = None,
+) -> Tuple[bytes, float]:
+    """
+    Decrypt an encrypted evidence artifact from disk.
+
+    Recovers the AES key (via RSA-OAEP unwrap or legacy fallback), authenticates
+    and decrypts the AES-256-GCM container, and returns (plaintext_bytes, duration_seconds).
+    """
+    aes_key = recover_evidence_aes_key(evidence, server_private_key)
+    return decrypt_payload(disk_bytes, aes_key, associated_data=associated_data)
+

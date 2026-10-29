@@ -24,5 +24,13 @@ class Evidence(Base):
     # True when the on-disk artifact has been AES-256-GCM encrypted at rest.
     # sha256_hash always stores the PLAINTEXT hash regardless of this flag.
     is_encrypted = Column(Boolean, default=False, nullable=False, server_default="0")
+    # Envelope encryption: RSA-OAEP wrapped AES-256 key (hex or base64)
+    encrypted_aes_key = Column(Text, nullable=True)
+    # Digital signature: RSA-PSS digital signature over canonical metadata
+    rsa_signature = Column(Text, nullable=True)
+    # Identifier of trusted signer public key used for verification
+    signer_key_id = Column(String(128), nullable=True)
+    # Authenticated encryption algorithm employed
+    encryption_algorithm = Column(String(64), nullable=True, default="AES-256-GCM")
     collected_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)

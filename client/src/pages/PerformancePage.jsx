@@ -42,6 +42,21 @@ const OPERATION_LABELS = {
     desc: 'Server-side pre-shared key signature check',
     color: '#1e40af',
   },
+  RSA_VERIFICATION: {
+    label: 'RSA-PSS Verification',
+    desc: 'Server-side digital signature verification against trusted public key',
+    color: '#0284c7',
+  },
+  RSA_SIGNING: {
+    label: 'RSA-PSS Signing',
+    desc: 'Client-side digital signature generation over canonical metadata',
+    color: '#0369a1',
+  },
+  AES_ENCRYPTION: {
+    label: 'AES-GCM Encryption',
+    desc: 'Client-side authenticated symmetric payload encryption',
+    color: '#9333ea',
+  },
   AES_DECRYPTION: {
     label: 'AES-GCM Decryption',
     desc: 'Authenticated AES-256-GCM transfer payload recovery',

@@ -63,15 +63,9 @@ def analyze_pcap_evidence(
     # Decrypt if the artifact was stored encrypted
     _temp_pcap_path: Optional[Path] = None
     if getattr(evidence, "is_encrypted", False):
-        from server.app.core.crypto import decrypt_payload as _decrypt_payload
-        from server.app.core.config import settings as _settings
-        if not _settings.FORENSIGHT_ENCRYPTION_KEY:
-            raise ValueError(
-                f"Evidence '{evidence.evidence_id}' is encrypted at rest but "
-                "FORENSIGHT_ENCRYPTION_KEY is not configured. Cannot decrypt for analysis."
-            )
+        from server.app.core.crypto import decrypt_evidence_artifact as _decrypt_evidence_artifact
         try:
-            plaintext_bytes, _ = _decrypt_payload(raw_disk_bytes, _settings.FORENSIGHT_ENCRYPTION_KEY)
+            plaintext_bytes, _ = _decrypt_evidence_artifact(evidence, raw_disk_bytes)
         except ValueError as exc:
             raise ValueError(
                 f"Pre-analysis decryption FAILED for '{evidence.evidence_id}': {exc}. "

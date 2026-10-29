@@ -52,10 +52,22 @@ class EvidenceRead(EvidenceBase):
     sha256_hash: str
     status: str
     is_encrypted: bool = False
+    encrypted_aes_key: Optional[str] = None
+    rsa_signature: Optional[str] = None
+    signer_key_id: Optional[str] = None
+    encryption_algorithm: Optional[str] = "AES-256-GCM"
     collected_at: datetime
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class PublicKeyResponse(BaseModel):
+    server_public_key: str
+    key_algorithm: str = "RSA-OAEP"
+    hash_algorithm: str = "SHA-256"
+    trusted_signer_id: str
+    demo_client_private_key: Optional[str] = None
 
 
 class EvidenceIntegrityResult(BaseModel):

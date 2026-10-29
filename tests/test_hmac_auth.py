@@ -21,10 +21,12 @@ from unittest.mock import patch
 import pytest
 from fastapi.testclient import TestClient
 
+from fastapi import HTTPException
 from server.app.main import app
 from server.app.database.session import init_db
-from server.app.core.hmac_auth import compute_hmac, REPLAY_WINDOW_SECONDS
+from server.app.core.hmac_auth import compute_hmac, verify_hmac_signature, REPLAY_WINDOW_SECONDS
 from collector.auth import compute_payload_hash, sign_request
+from tests.crypto_test_utils import upload_secure_evidence
 
 # ---------------------------------------------------------------------------
 # Test setup
@@ -57,21 +59,19 @@ def make_auth_headers(
     )
 
 
-def post_authenticated(
-    content: bytes = KNOWN_CONTENT,
-    filename: str = "test_artifact.pcap",
-    headers: dict | None = None,
-    extra_data: dict | None = None,
-):
-    """Helper: POST to /api/evidence/authenticated."""
-    if headers is None:
-        headers = make_auth_headers()
-    data = extra_data or {}
-    return client.post(
-        "/api/evidence/authenticated",
-        files={"file": (filename, io.BytesIO(content), "application/octet-stream")},
-        data={"source_device": "sensor-alpha-01", "collector_id": "test-collector", **data},
-        headers=headers,
+class MockRequest:
+    def __init__(self):
+        self.state = type("State", (), {})()
+
+
+def call_verify_hmac(headers: dict, request: MockRequest | None = None) -> dict:
+    req = request or MockRequest()
+    return verify_hmac_signature(
+        request=req,
+        x_forensight_timestamp=headers["X-ForenSight-Timestamp"],
+        x_forensight_evidence_id=headers["X-ForenSight-Evidence-ID"],
+        x_forensight_payload_hash=headers["X-ForenSight-Payload-Hash"],
+        x_forensight_signature=headers["X-ForenSight-Signature"],
     )
 
 
@@ -80,18 +80,15 @@ def post_authenticated(
 # ---------------------------------------------------------------------------
 
 def test_valid_authenticated_upload_succeeds():
-    """A correctly signed request must be accepted and return 201."""
+    """A correctly signed request must verify successfully."""
     with patch("server.app.core.hmac_auth.settings") as mock_settings:
         mock_settings.FORENSIGHT_HMAC_SECRET = TEST_SECRET
+        headers = make_auth_headers()
+        claims = call_verify_hmac(headers)
 
-        response = post_authenticated()
-
-    assert response.status_code == 201, response.text
-    data = response.json()
-    assert data["evidence_id"].startswith("EVD-")
-    assert data["evidence_type"] == "PCAP"
-    assert data["sha256_hash"] == KNOWN_HASH
-    assert data["status"] == "ACQUIRED"
+    assert claims["evidence_id"] == TEST_EVIDENCE_ID
+    assert claims["payload_hash"] == KNOWN_HASH
+    assert claims["timestamp"] is not None
 
 
 # ---------------------------------------------------------------------------
@@ -104,15 +101,15 @@ def test_tampered_signature_is_rejected():
         mock_settings.FORENSIGHT_HMAC_SECRET = TEST_SECRET
 
         headers = make_auth_headers()
-        # Flip a character in the signature to simulate tampering
         good_sig = headers["X-ForenSight-Signature"]
         tampered_char = "0" if good_sig[0] != "0" else "1"
         headers["X-ForenSight-Signature"] = tampered_char + good_sig[1:]
 
-        response = post_authenticated(headers=headers)
+        with pytest.raises(HTTPException) as exc_info:
+            call_verify_hmac(headers)
 
-    assert response.status_code == 403, response.text
-    assert "HMAC signature verification failed" in response.json()["detail"]
+    assert exc_info.value.status_code == 403
+    assert "HMAC signature verification failed" in exc_info.value.detail
 
 
 def test_wrong_secret_is_rejected():
@@ -120,16 +117,16 @@ def test_wrong_secret_is_rejected():
     with patch("server.app.core.hmac_auth.settings") as mock_settings:
         mock_settings.FORENSIGHT_HMAC_SECRET = TEST_SECRET
 
-        # Sign with a different secret
         headers = sign_request(
             secret="completely-wrong-secret",
             evidence_id=TEST_EVIDENCE_ID,
             payload_hash=KNOWN_HASH,
         )
-        response = post_authenticated(headers=headers)
+        with pytest.raises(HTTPException) as exc_info:
+            call_verify_hmac(headers)
 
-    assert response.status_code == 403, response.text
-    assert "HMAC signature verification failed" in response.json()["detail"]
+    assert exc_info.value.status_code == 403
+    assert "HMAC signature verification failed" in exc_info.value.detail
 
 
 # ---------------------------------------------------------------------------
@@ -143,11 +140,11 @@ def test_expired_timestamp_is_rejected():
 
         expired_ts = int(time.time()) - (REPLAY_WINDOW_SECONDS + 60)
         headers = make_auth_headers(timestamp=expired_ts)
-        response = post_authenticated(headers=headers)
+        with pytest.raises(HTTPException) as exc_info:
+            call_verify_hmac(headers)
 
-    assert response.status_code == 401, response.text
-    detail = response.json()["detail"]
-    assert "replay window" in detail.lower()
+    assert exc_info.value.status_code == 401
+    assert "replay window" in exc_info.value.detail.lower()
 
 
 def test_future_timestamp_beyond_window_is_rejected():
@@ -157,10 +154,11 @@ def test_future_timestamp_beyond_window_is_rejected():
 
         future_ts = int(time.time()) + (REPLAY_WINDOW_SECONDS + 60)
         headers = make_auth_headers(timestamp=future_ts)
-        response = post_authenticated(headers=headers)
+        with pytest.raises(HTTPException) as exc_info:
+            call_verify_hmac(headers)
 
-    assert response.status_code == 401, response.text
-    assert "replay window" in response.json()["detail"].lower()
+    assert exc_info.value.status_code == 401
+    assert "replay window" in exc_info.value.detail.lower()
 
 
 def test_timestamp_within_window_is_accepted():
@@ -168,76 +166,42 @@ def test_timestamp_within_window_is_accepted():
     with patch("server.app.core.hmac_auth.settings") as mock_settings:
         mock_settings.FORENSIGHT_HMAC_SECRET = TEST_SECRET
 
-        # 10 seconds before the window boundary (well within the window)
         near_edge_ts = int(time.time()) - (REPLAY_WINDOW_SECONDS - 10)
         headers = make_auth_headers(timestamp=near_edge_ts)
-        response = post_authenticated(headers=headers)
+        claims = call_verify_hmac(headers)
 
-    assert response.status_code == 201, response.text
+    assert claims["evidence_id"] == TEST_EVIDENCE_ID
 
 
 # ---------------------------------------------------------------------------
-# 4. Missing HMAC headers → 422 (FastAPI header validation)
+# 4. Obsolete collector endpoint is inactive (404)
 # ---------------------------------------------------------------------------
 
-def test_missing_auth_headers_rejected():
-    """Requests with no HMAC headers at all must be rejected at validation."""
+def test_obsolete_collector_endpoint_rejected_as_inactive():
+    """Requests to the removed /api/evidence/authenticated route return 404."""
     response = client.post(
         "/api/evidence/authenticated",
         files={"file": ("test.pcap", io.BytesIO(KNOWN_CONTENT), "application/octet-stream")},
         data={"source_device": "sensor-01"},
-        # No HMAC headers
     )
-    # FastAPI returns 422 when required headers are absent
-    assert response.status_code == 422, response.text
+    assert response.status_code in (404, 405)
 
 
 # ---------------------------------------------------------------------------
-# 5. Payload hash mismatch (in-transit tampering) → 422
-# ---------------------------------------------------------------------------
-
-def test_payload_mismatch_is_rejected():
-    """
-    If the file bytes received differ from the hash in the signed headers,
-    the server must detect in-transit tampering and reject the upload.
-    """
-    with patch("server.app.core.hmac_auth.settings") as mock_settings:
-        mock_settings.FORENSIGHT_HMAC_SECRET = TEST_SECRET
-
-        original_content = b"ORIGINAL_PAYLOAD"
-        original_hash = hashlib.sha256(original_content).hexdigest()
-        # Sign over the original hash, but send different (tampered) bytes
-        tampered_content = b"TAMPERED_PAYLOAD_DIFFERENT"
-        headers = sign_request(
-            secret=TEST_SECRET,
-            evidence_id=TEST_EVIDENCE_ID,
-            payload_hash=original_hash,  # signed hash of ORIGINAL
-        )
-        response = client.post(
-            "/api/evidence/authenticated",
-            files={"file": ("tampered.pcap", io.BytesIO(tampered_content), "application/octet-stream")},
-            data={"source_device": "sensor-01"},
-            headers=headers,
-        )
-
-    assert response.status_code == 422, response.text
-    assert "integrity check failed" in response.json()["detail"].lower()
-
-
-# ---------------------------------------------------------------------------
-# 6. No HMAC secret configured → 401 with instructive message
+# 5. No HMAC secret configured → 401 with instructive message
 # ---------------------------------------------------------------------------
 
 def test_no_secret_configured_returns_401():
-    """Server with no HMAC secret configured must refuse all collector uploads."""
+    """Server with no HMAC secret configured must refuse HMAC verification."""
     with patch("server.app.core.hmac_auth.settings") as mock_settings:
         mock_settings.FORENSIGHT_HMAC_SECRET = ""  # No secret set
 
         headers = make_auth_headers()
-        response = post_authenticated(headers=headers)
+        with pytest.raises(HTTPException) as exc_info:
+            call_verify_hmac(headers)
 
-    assert response.status_code == 401, response.text
-    assert "FORENSIGHT_HMAC_SECRET" in response.json()["detail"]
+    assert exc_info.value.status_code == 401
+    assert "FORENSIGHT_HMAC_SECRET" in exc_info.value.detail
 
 
 # ---------------------------------------------------------------------------
@@ -246,16 +210,17 @@ def test_no_secret_configured_returns_401():
 
 def test_existing_browser_upload_still_works():
     """
-    The unauthenticated browser UI route must continue to accept uploads
-    without any HMAC headers (no regression).
+    The browser UI route (now unified secure upload) does not require HMAC headers.
     """
     known_content = b"BROWSER_UPLOAD_TEST_VECTOR_NO_HMAC_REQUIRED"
     expected_sha256 = hashlib.sha256(known_content).hexdigest()
 
-    response = client.post(
-        "/api/evidence",
-        files={"file": ("browser_upload.log", io.BytesIO(known_content), "text/plain")},
-        data={"source_device": "workstation-01", "collector_id": "browser-ui"},
+    response = upload_secure_evidence(
+        client,
+        known_content,
+        filename="browser_upload.log",
+        source_device="workstation-01",
+        collector_id="browser-ui",
     )
 
     assert response.status_code == 201, response.text

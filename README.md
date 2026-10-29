@@ -15,14 +15,15 @@ The system is organized into three primary logical tiers:
    - Forensic analysis engine for PCAP network packet dissection, threat heuristic inspection (e.g. port scans, cleartext protocol detection), chronological forensic timeline generation, and chain-of-custody tracking.
    - High-resolution monotonic benchmark recorder auditing hashing, ingestion, HMAC verification, decryption, and analysis latencies.
 
-2. **Evidence Collector (`collector/`)**:
-   - Edge collection agent designed to run on investigation workstations or remote endpoints/VMs.
-   - Computes original evidence SHA-256 digests.
-   - Implements **AES-256-GCM transfer encryption** with unique 12-byte random nonces and authenticated context binding.
-   - Produces **HMAC-SHA256** signatures (`timestamp:evidence_id:payload_hash`) with replay protection for authenticated transmission to `POST /api/evidence/authenticated`.
+2. **Evidence Collector & Reusable Utilities (`collector/`)**:
+   - Edge collection utilities designed to run on investigation workstations or remote endpoints/VMs.
+   - Computes original evidence SHA-256 digests (`compute_payload_hash`).
+   - Implements **AES-256-GCM authenticated encryption** with unique 12-byte random nonces and context binding.
+   - Reusable HMAC-SHA256 signature and metrics helpers (`sign_request_with_metrics`).
 
 3. **Investigation Dashboard (`client/`)**:
    - Desktop-grade web interface built with **React**, **Vite**, and **Tailwind CSS**.
+   - Full Web Crypto API client-side cryptography pipeline (SHA-256 hashing, AES-256-GCM symmetric encryption, RSA-OAEP key wrapping, and RSA-PSS digital signing).
    - Information-first design featuring real system telemetry, database status, module readiness, and empty state representations without synthetic/mock evidence.
    - Interactive pages for Evidence Management, PCAP Analysis, Chain of Custody Ledger, Forensic Timeline Exploration, Performance Telemetry Dashboard, and System Configuration.
 
@@ -30,15 +31,14 @@ The system is organized into three primary logical tiers:
 
 ## Core Security & Forensic Features
 
-- **AES-256-GCM Transfer Encryption**:
-  - Secure Collector → Server evidence transmission.
-  - Unique 96-bit (12-byte) random nonce per encryption operation.
-  - 128-bit authentication tag validating ciphertext integrity and authenticity.
-  - Wire format: `nonce (12 B) || tag (16 B) || ciphertext (N B)`.
-  - Recovered original evidence is verified against the signed SHA-256 digest before physical storage on disk (ciphertext is never stored as the forensic artifact).
-- **HMAC-SHA256 Request Authentication**:
-  - Pre-shared secret authentication verifying collector identity and binding request parameters (`timestamp`, `evidence_id`, `payload_hash`).
-  - Replay attack window mitigation (`HMAC_REPLAY_WINDOW_SECONDS`, default 300s).
+- **Unified Secure Evidence Ingestion (`POST /api/evidence`)**:
+  - Sole supported evidence ingestion path. All uploads are encrypted before leaving the browser.
+  - **SHA-256 Original Integrity**: Plaintext hash calculated over original bytes prior to encryption and verified server-side after decryption.
+  - **AES-256-GCM Payload Encryption**: Fresh 256-bit symmetric key per artifact; unique 96-bit nonce; 128-bit authentication tag.
+  - **RSA-OAEP Key Wrapping**: AES key encrypted under server's RSA public key (2048-bit, SHA-256, MGF1).
+  - **RSA-PSS Digital Signature**: Canonical JSON metadata claims signed using client's RSA private key and verified against server's trusted signer registry.
+  - **Preserved Custody & Storage**: At-rest encrypted artifact persistence with full ACQUIRED chain-of-custody recording.
+  - **Authorized Download**: Verified on-the-fly decryption with authentication tag check and SHA-256 validation.
 - **Cryptographic Chain of Custody**:
   - Immutable audit trail recording evidence lifecycle actions (`ACQUIRED`, `ANALYZED`, etc.), actors, storage paths, and SHA-256 integrity notes.
 - **Forensic Timeline & Correlation**:
@@ -208,9 +208,11 @@ npm run build
 |---|---|---|---|
 | `/api/health` | GET | Server health, database status, and storage availability | None |
 | `/api/system/stats` | GET | Real database record counts and subsystem state | None |
+| `/api/system/public-keys` | GET | Retrieve server RSA public key & demo signing credentials | None |
 | `/api/evidence` | GET | List all registered forensic evidence records | None |
-| `/api/evidence` | POST | Workstation browser upload (streaming SHA-256) | None |
-| `/api/evidence/authenticated` | POST | Collector upload (AES-GCM transfer + HMAC verification) | HMAC-SHA256 |
+| `/api/evidence` | POST | Unified secure evidence upload (RSA-PSS + AES-GCM + SHA-256) | RSA-PSS Signature |
+| `/api/evidence/{evidence_id}/download` | GET | Authorized evidence download (on-the-fly decryption & integrity check) | None |
+| `/api/evidence/{evidence_id}/verify` | POST | Post-acquisition integrity verification against stored SHA-256 | None |
 | `/api/custody/{evidence_id}` | GET | Retrieve chain-of-custody audit records | None |
 | `/api/analysis/{evidence_id}` | POST | Execute PCAP analysis and heuristic detection | None |
 | `/api/analysis/findings` | GET | Retrieve detected security and forensic findings | None |

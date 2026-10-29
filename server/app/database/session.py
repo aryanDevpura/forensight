@@ -42,12 +42,20 @@ def init_db() -> None:
                 with engine.begin() as conn:
                     conn.execute(text("ALTER TABLE benchmark_results ADD COLUMN evidence_id VARCHAR(64)"))
                     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_benchmark_results_evidence_id ON benchmark_results (evidence_id)"))
-        # Migration: add is_encrypted to evidence table (default 0 = not encrypted)
+        # Migration: add is_encrypted and RSA/envelope encryption columns to evidence table
         if "evidence" in table_names:
             cols = [c["name"] for c in insp.get_columns("evidence")]
-            if "is_encrypted" not in cols:
-                with engine.begin() as conn:
+            with engine.begin() as conn:
+                if "is_encrypted" not in cols:
                     conn.execute(text("ALTER TABLE evidence ADD COLUMN is_encrypted INTEGER NOT NULL DEFAULT 0"))
+                if "encrypted_aes_key" not in cols:
+                    conn.execute(text("ALTER TABLE evidence ADD COLUMN encrypted_aes_key TEXT"))
+                if "rsa_signature" not in cols:
+                    conn.execute(text("ALTER TABLE evidence ADD COLUMN rsa_signature TEXT"))
+                if "signer_key_id" not in cols:
+                    conn.execute(text("ALTER TABLE evidence ADD COLUMN signer_key_id VARCHAR(128)"))
+                if "encryption_algorithm" not in cols:
+                    conn.execute(text("ALTER TABLE evidence ADD COLUMN encryption_algorithm VARCHAR(64)"))
     except Exception:
         pass
 

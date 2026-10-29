@@ -17,6 +17,7 @@ from fastapi.testclient import TestClient
 
 from server.app.main import app
 from server.app.database.session import init_db
+from tests.crypto_test_utils import upload_secure_evidence
 
 init_db()
 client = TestClient(app)
@@ -29,14 +30,13 @@ def upload_test_evidence(
     collector_id: str = "custody-test-collector",
 ):
     """Upload a test evidence file and return the response JSON."""
-    response = client.post(
-        "/api/evidence",
-        files={"file": (filename, io.BytesIO(content), "application/octet-stream")},
-        data={
-            "source_device": source_device,
-            "collector_id": collector_id,
-            "description": "Chain of custody test artifact",
-        },
+    response = upload_secure_evidence(
+        client=client,
+        content=content,
+        filename=filename,
+        source_device=source_device,
+        collector_id=collector_id,
+        description="Chain of custody test artifact",
     )
     assert response.status_code == 201, response.text
     return response.json()

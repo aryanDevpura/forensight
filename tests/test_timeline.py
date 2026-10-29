@@ -23,6 +23,7 @@ from fastapi.testclient import TestClient
 
 from server.app.main import app
 from server.app.database.session import init_db
+from tests.crypto_test_utils import upload_secure_evidence
 
 init_db()
 client = TestClient(app)
@@ -60,10 +61,12 @@ def test_timeline_events_generated_on_analysis():
     expected_hash = hashlib.sha256(pcap_data).hexdigest()
 
     # 1. Upload evidence
-    upload_resp = client.post(
-        "/api/evidence",
-        files={"file": ("timeline_test.pcap", io.BytesIO(pcap_data), "application/octet-stream")},
-        data={"source_device": "network-gateway-01", "collector_id": "collector-agent-01"},
+    upload_resp = upload_secure_evidence(
+        client,
+        pcap_data,
+        filename="timeline_test.pcap",
+        source_device="network-gateway-01",
+        collector_id="collector-agent-01",
     )
     assert upload_resp.status_code == 201
     evidence_id = upload_resp.json()["evidence_id"]
@@ -106,10 +109,16 @@ def test_timeline_events_generated_on_analysis():
     assert disk_file.exists()
     disk_bytes = disk_file.read_bytes()
     if upload_resp.json().get("is_encrypted"):
-        from server.app.core.crypto import decrypt_payload
-        from server.app.core.config import settings
-        decrypted_bytes, _ = decrypt_payload(disk_bytes, settings.FORENSIGHT_ENCRYPTION_KEY)
-        post_hash = hashlib.sha256(decrypted_bytes).hexdigest()
+        from server.app.database.session import SessionLocal
+        from server.app.models.evidence import Evidence
+        from server.app.core.crypto import decrypt_evidence_artifact
+        db = SessionLocal()
+        try:
+            evd_obj = db.query(Evidence).filter(Evidence.evidence_id == evidence_id).first()
+            decrypted_bytes, _ = decrypt_evidence_artifact(evd_obj, disk_bytes)
+            post_hash = hashlib.sha256(decrypted_bytes).hexdigest()
+        finally:
+            db.close()
     else:
         post_hash = hashlib.sha256(disk_bytes).hexdigest()
     assert post_hash == expected_hash, "Original file hash must remain unchanged"
@@ -127,14 +136,8 @@ def test_timeline_isolated_between_multiple_evidence():
     pcap_1 = build_test_pcap(packet_count=2)
     pcap_2 = build_test_pcap(packet_count=3)
 
-    up1 = client.post(
-        "/api/evidence",
-        files={"file": ("trace_one.pcap", io.BytesIO(pcap_1), "application/octet-stream")},
-    ).json()
-    up2 = client.post(
-        "/api/evidence",
-        files={"file": ("trace_two.pcap", io.BytesIO(pcap_2), "application/octet-stream")},
-    ).json()
+    up1 = upload_secure_evidence(client, pcap_1, filename="trace_one.pcap").json()
+    up2 = upload_secure_evidence(client, pcap_2, filename="trace_two.pcap").json()
 
     id1 = up1["evidence_id"]
     id2 = up2["evidence_id"]
@@ -152,10 +155,7 @@ def test_timeline_isolated_between_multiple_evidence():
 def test_timeline_idempotency_on_reanalysis():
     """Re-analyzing an evidence item should refresh events without leaking duplicates."""
     pcap_data = build_test_pcap(packet_count=3)
-    evd = client.post(
-        "/api/evidence",
-        files={"file": ("idempotency.pcap", io.BytesIO(pcap_data), "application/octet-stream")},
-    ).json()
+    evd = upload_secure_evidence(client, pcap_data, filename="idempotency.pcap").json()
     evd_id = evd["evidence_id"]
 
     client.post(f"/api/analysis/{evd_id}")
